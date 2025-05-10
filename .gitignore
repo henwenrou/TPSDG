@@ -1,0 +1,31 @@
+# Python 缓存
+__pycache__/
+*.pyc
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Mac 系统文件
+.DS_Store
+
+# 模型权重和日志
+*.pth
+logs/
+checkpoints/
+*.ckpt
+
+# 参考内容不git记录
+ref/
+
+# data部分内容也不要
+data/Backup
+data/processed
+data/raw
+
+
+# VSCode 设置（可选）
+.vscode/
+
+# 无关idea
+.idea/
+
