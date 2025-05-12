@@ -119,12 +119,14 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
    # 如果启用了拓扑损失，则创建实例
     if loss_config and loss_config.topo.enabled:
         ph_criterion = PHLoss().to(device)
+        topo_weight = loss_config.topo.weight
     else:
         ph_criterion = None
         
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
-
+    metric_logger.add_meter('topo', utils.SmoothedValue(window_size=1, fmt='{value:.4f}'))
+    
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 10
 
@@ -217,6 +219,7 @@ def train_one_epoch_SBF(model: torch.nn.Module, criterion: torch.nn.Module,
 
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
+    metric_logger.add_meter('topo', utils.SmoothedValue(window_size=1, fmt='{value:.4f}'))
 
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 10
