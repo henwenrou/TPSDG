@@ -180,7 +180,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 def train_one_epoch_SBF(model: torch.nn.Module, criterion: torch.nn.Module,
                         data_loader: Iterable, optimizer: torch.optim.Optimizer,
                         device: torch.device, epoch: int, cur_iteration: int, max_iteration: int = -1, config=None,
-                        visdir=None):
+                        visdir=None, loss_config=None):
     """
     单个Epoch训练过程（针对Saliency Balancing Fusion, SBF版）。
 
@@ -204,6 +204,14 @@ def train_one_epoch_SBF(model: torch.nn.Module, criterion: torch.nn.Module,
         5. 更新各项指标记录，并定期保存可视化图像；
         6. 当达到最大迭代次数时退出训练。
     """
+    # 实例化拓扑损失
+    if loss_config and hasattr(loss_config, "topo") and loss_config.topo.enabled:
+        ph_criterion = PHLoss().to(device)
+        topo_weight = loss_config.topo.weight
+    else:
+        ph_criterion = None
+        topo_weight = 0.0
+        
     model.train()
     criterion.train()
 
