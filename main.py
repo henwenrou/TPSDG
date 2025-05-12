@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader  # 用于构造数据加载器
 from engine import train_warm_up, evaluate, train_one_epoch_SBF, train_one_epoch
 # 从 engine 模块导入训练、评估和单个 epoch 训练的函数
 
-from ref.SLAug.losses import SetCriterion  # 导入自定义的损失函数
+from losses import SetCriterion  # 导入自定义的损失函数
 import numpy as np  # 数值计算库
 import random      # 随机数生成
 from torch.optim import lr_scheduler  # 学习率调度器
