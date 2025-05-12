@@ -246,7 +246,7 @@ def train_one_epoch_SBF(model: torch.nn.Module, criterion: torch.nn.Module,
         loss_dict = criterion.get_loss(logits, lbl)
         losses = sum(loss_dict[k] * criterion.weight_dict[k] for k in loss_dict.keys())
         if ph_criterion is not None:
-            topo_loss = ph_criterion(pred, lbl)
+            topo_loss = ph_criterion(logits, lbl)
             losses = losses + loss_config.topo.weight * topo_loss
             loss_dict['topo'] = topo_loss.item() # 可选：将 topo_loss 也记录到 log
         losses.backward(retain_graph=True)

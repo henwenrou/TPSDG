@@ -128,14 +128,9 @@ class AbdominalDataset(torch_data.Dataset):
             location_scale (bool): 是否应用位置尺度增强
         """
         self._base_dir = base_dir
-        # 检查路径是否正确
-        print("当前的base_dir:", self._base_dir)
-
         # 如果路径存在问题，可以用 os.path.abspath() 转换为绝对路径
         import os
         abs_base_dir = os.path.abspath(self._base_dir)
-        print("绝对路径:", abs_base_dir)
-
         super(AbdominalDataset, self).__init__()
         self.transforms = transforms
         self.is_train = True if mode == 'train' else False  # 根据模式确定是否为训练阶段

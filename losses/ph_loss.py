@@ -9,7 +9,7 @@ Topology-aware loss compatible with torchph==0.1.1
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import numpy as np
 # ----- 试优先用 torchph（真编好了扩展）-----
 try:
     from torchph.cubical import cubical_persistence
@@ -17,14 +17,21 @@ except (ImportError, ModuleNotFoundError):
     # ----- 否则回退到 GUDHI -----
     from gudhi.sklearn.cubical_persistence import CubicalPersistence
     def cubical_persistence(img, dims=(0,)):
-        # img: (1,H,W) torch.Tensor on CPU
-        # 返回 list[np.ndarray]，保持与原 torchph 接口一致
+        """
+        img : torch.Tensor (1,H,W) or (H,W)
+        返回 list[np.ndarray]  ⟨按 dims 顺序排列的条形码⟩
+        """
         import numpy as np
         cp = CubicalPersistence(homology_dimensions=list(dims))
-        diags = cp.fit_transform(img.squeeze().cpu().numpy()[None])[0]
-        # diags 是 dict{dim: (N_i,2)}，按 dim 顺序转换
-        return [np.asarray(diags[d]) if d in diags else
-                np.zeros((0,2), dtype=np.float32) for d in dims]
+        dgms = cp.fit_transform(img.squeeze().cpu().numpy()[None])[0]   # ↩︎ dgms 可能是 list **或** dict
+    
+        # -------- 兼容两种返回类型 --------
+        if isinstance(dgms, dict):              # 官方 sklearn 包装：dict{dim:array}
+            pull = lambda d: dgms.get(d, np.zeros((0, 2), np.float32))
+        else:                                   # 早期实现：list  [array_dim0, array_dim1, ...]
+            pull = lambda d: dgms[d] if d < len(dgms) else np.zeros((0, 2), np.float32)
+    
+        return [np.asarray(pull(dim), dtype=np.float32) for dim in dims]
         
 # --- Wasserstein 距离 --------------------------------------------------------
 try:                                # 如果将来你真装上带 utils 的 torchph
@@ -97,9 +104,15 @@ class PHLoss(nn.Module):
                 # 同调维循环求 W₂
                 l = 0.0
                 for idx, _ in enumerate(self.dims):
+                    if dg_pred[idx].size == 0 and dg_true[idx].size == 0:
+                        continue
                     l += wasserstein_distance(dg_pred[idx], dg_true[idx], p=2)
+                
+                # 转成tensor 放在与logits同设备
+                if np.isnan(l) or np.isinf(l):
+                    l = 0.0
+                losses.append(torch.tensor(l, device=pred.device, dtype=pred.dtype))
 
-                losses.append(l)
 
         out = torch.stack(losses)
         return out.mean() if self.reduction == "mean" else out.sum()
