@@ -26,20 +26,20 @@ data:
     batch_size: 32
     num_workers: 8
     train:
-      target: dataloaders.CardiacDataset.get_training
+      target: data.CardiacDataset.get_training
       params:
         location_scale: true
         modality:
           - bSSFP
         tile_z_dim: 1
     validation:
-      target: dataloaders.CardiacDataset.get_validation
+      target: data.CardiacDataset.get_validation
       params:
         modality:
           - bSSFP
         tile_z_dim: 1
     test:
-      target: dataloaders.CardiacDataset.get_test
+      target: data.CardiacDataset.get_test
       params:
         modality:
           - LGE

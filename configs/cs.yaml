@@ -26,20 +26,20 @@ data:
     batch_size: 32
     num_workers: 8
     train:
-      target: dataloaders.AbdominalDataset.get_training
+      target: data.AbdominalDataset.get_training
       params:
         location_scale: true
         modality:
           - CHAOST2
         tile_z_dim: 1
     validation:
-      target: dataloaders.AbdominalDataset.get_validation
+      target: data.AbdominalDataset.get_validation
       params:
         modality:
           - CHAOST2
         tile_z_dim: 1
     test:
-      target: dataloaders.AbdominalDataset.get_test_all
+      target: data.AbdominalDataset.get_test_all
       params:
         modality:
           - SABSCT
