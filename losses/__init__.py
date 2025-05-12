@@ -1,6 +1,6 @@
 import torch.nn as nn
 from monai.losses import DiceLoss
-from ph_loss inport PHLoss
+from .ph_loss import PHLoss
 
 class SetCriterion(nn.Module):
     def __init__(self):

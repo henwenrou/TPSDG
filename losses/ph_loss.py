@@ -1,43 +1,105 @@
 # TPSDG/losses/ph_loss.py
-import torch, torch.nn as nn
-from torchph.core import cubical        # ⬅️ GPU cubical persistence
-from torchph.utils.wasserstein import wasserstein_distance
+"""
+Topology-aware loss compatible with torchph==0.1.1
+-------------------------------------------------
+* 支持二值 / 多类分割
+* 默认用 W₂ 距离度量同调差异（可自行换 p=1 / p=∞）
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+# ----- 试优先用 torchph（真编好了扩展）-----
+try:
+    from torchph.cubical import cubical_persistence
+except (ImportError, ModuleNotFoundError):
+    # ----- 否则回退到 GUDHI -----
+    from gudhi.sklearn.cubical_persistence import CubicalPersistence
+    def cubical_persistence(img, dims=(0,)):
+        # img: (1,H,W) torch.Tensor on CPU
+        # 返回 list[np.ndarray]，保持与原 torchph 接口一致
+        import numpy as np
+        cp = CubicalPersistence(homology_dimensions=list(dims))
+        diags = cp.fit_transform(img.squeeze().cpu().numpy()[None])[0]
+        # diags 是 dict{dim: (N_i,2)}，按 dim 顺序转换
+        return [np.asarray(diags[d]) if d in diags else
+                np.zeros((0,2), dtype=np.float32) for d in dims]
+        
+# --- Wasserstein 距离 --------------------------------------------------------
+try:                                # 如果将来你真装上带 utils 的 torchph
+    from torchph.utils.wasserstein import wasserstein_distance
+except ImportError:                 # 否则回退到 GUDHI 实现
+    from gudhi.wasserstein import wasserstein_distance as _gudhi_wd
+
+    # 包一层，以保持原来 p 参数的调用方式
+    def wasserstein_distance(diag_p, diag_g, p=2):
+        # GUDHI 的签名是 order=、internal_p=
+        return _gudhi_wd(diag_p, diag_g, order=p, internal_p=2.0)
 
 class PHLoss(nn.Module):
     """
-    Persistent-Homology loss for binary/多类分割
-    pred : (B,C,H,W)  —— logits or probs
-    target : (B,C,H,W) —— one-hot tensor 0/1
-    dims : tuple of homology dimensions to penalise, e.g. (0,1) for 连通性+空洞
+    Args
+    ----
+    dims        : tuple(int)  需要惩罚的同调维，如 (0,1) 表示连通分量 + 空洞
+    threshold   : float       若 pred 是概率，可以二值化做硬过滤；设为 None 保持连续
+    reduction   : "mean"|"sum"
     """
-    def __init__(self, dims=(0, ), thresh=0.5, reduction="mean"):
+
+    def __init__(self, dims=(0,), threshold=0.5, reduction="mean"):
         super().__init__()
-        self.dims, self.th, self.reduction = dims, thresh, reduction
+        self.dims = dims
+        self.th = threshold
+        self.reduction = reduction
 
+    # ------------------------------------------------------------------ utils
     @torch.no_grad()
-    def _diagram(self, mask, dims):
-        """mask: (H,W) float32  ∈[0,1]"""
-        # cubical persistence expects **smaller value = earlier birth**
-        filt = 1. - mask      # invert s.t. object pixels=0
-        dgms = cubical.cubical_persistence(filt, dims=dims)  # list of diagrams
-        return dgms
+    def _diagram(self, img: torch.Tensor):
+        """
+        img : (H,W) float32, 已经在 [0,1] or {0,1}
+        返回 list[diag_dim_i]，每个 diag 形如 (N_i, 2)
+        """
+        # cubical 按“越小越早”原则；前景像素设为 0 可以让其先出生
+        filtration = 1.0 - img
+        # torchph 要求 batch 维；(1,H,W) 即可
+        return cubical_persistence(filtration.unsqueeze(0), dims=self.dims)
 
-    def forward(self, pred, target):
-        prob = torch.sigmoid(pred) if pred.dtype == torch.float32 else pred
-        B, C, _, _ = prob.shape
+    # ---------------------------------------------------------------- forward
+    def forward(self, pred: torch.Tensor, target: torch.Tensor):
+        """
+        pred   : (B,C,H,W) logits **或** prob
+        target : (B,C,H,W) one-hot 0/1  (若传入 (B,1,H,W) 则视为二值)
+        """
+        # ------ 1) 概率化 ------
+        if pred.dtype.is_floating_point and pred.max() > 1.5:   # 粗糙判定 logits
+            prob = torch.sigmoid(pred) if pred.shape[1] == 1 else F.softmax(pred, dim=1)
+        else:
+            prob = pred                                           # 已是概率
+
+        # ------ 2) one-hot 校正 ------
+        if target.shape[1] != prob.shape[1]:                      # 例如 (B,1,H,W)
+            target = F.one_hot(target.long().squeeze(1),
+                               num_classes=prob.shape[1]).permute(0, 3, 1, 2).float()
+
+        B, C, *_ = prob.shape
         losses = []
 
+        # ------ 3) 逐通道/逐样本比较拓扑 ------
         for b in range(B):
             for c in range(C):
-                p, g = prob[b, c], target[b, c].float()
-                d_pred = self._diagram(p, self.dims)
-                d_gt   = self._diagram(g, self.dims)
+                # 可选硬阈值化：使图像更像 0/1
+                p_img = (prob[b, c] > self.th).float() if self.th is not None else prob[b, c]
+                g_img = target[b, c]
 
-                loss_c = 0.
-                # 按每个维度计算 W₂ 距离
-                for idx, dim in enumerate(self.dims):
-                    loss_c += wasserstein_distance(d_pred[idx], d_gt[idx], p=2)
-                losses.append(loss_c)
+                dg_pred = self._diagram(p_img)
+                dg_true = self._diagram(g_img)
 
-        loss = torch.stack(losses)
-        return loss.mean() if self.reduction == "mean" else loss.sum()
+                # 同调维循环求 W₂
+                l = 0.0
+                for idx, _ in enumerate(self.dims):
+                    l += wasserstein_distance(dg_pred[idx], dg_true[idx], p=2)
+
+                losses.append(l)
+
+        out = torch.stack(losses)
+        return out.mean() if self.reduction == "mean" else out.sum()

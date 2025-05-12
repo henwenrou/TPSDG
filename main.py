@@ -214,7 +214,8 @@ if __name__ == "__main__":
     model_config = config.pop("model", OmegaConf.create())
     optimizer_config = config.pop('optimizer', OmegaConf.create())
     SBF_config = config.pop('saliency_balancing_fusion', OmegaConf.create())
-
+    loss_config = config.pop('loss', OmegaConf.create())
+    
     # 根据模型配置实例化模型
     model = instantiate_from_config(model_config)
     if torch.cuda.is_available():
@@ -297,9 +298,9 @@ if __name__ == "__main__":
     for cur_epoch in range(max_epoch):
         # 根据 SBF 配置决定使用哪种单 epoch 训练方法
         if SBF_config.usage:
-            cur_iter = train_one_epoch_SBF(model, criterion, train_loader, opt, torch.device('cuda'), cur_epoch, cur_iter, optimizer_config.max_iter, SBF_config, visdir)
+            cur_iter = train_one_epoch_SBF(model, criterion, train_loader, opt, torch.device('cuda'), cur_epoch, cur_iter, optimizer_config.max_iter, SBF_config, visdir, loss_config)
         else:
-            cur_iter = train_one_epoch(model, criterion, train_loader, opt, torch.device('cuda'), cur_epoch, cur_iter, optimizer_config.max_iter)
+            cur_iter = train_one_epoch(model, criterion, train_loader, opt, torch.device('cuda'), cur_epoch, cur_iter, optimizer_config.max_iter, loss_config)
         # 更新学习率调度器
         if scheduler is not None:
             scheduler.step()

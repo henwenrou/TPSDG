@@ -12,6 +12,7 @@ import torch.nn.functional as F  # PyTorch中常用的函数接口，例如one_h
 from monai.metrics import compute_meandice  # MONAI中计算平均Dice系数的函数
 from torch.autograd import Variable  # 用于包装变量，使其支持自动求导
 from data.saliency_balancing_fusion import get_SBF_map  # 导入获取SBF（Saliency Balancing Fusion）图的函数
+from losses.ph_loss import PHLoss
 
 # 重定义print函数，自动flush标准输出，确保输出不被缓冲
 print = functools.partial(print, flush=True)
@@ -70,6 +71,10 @@ def train_warm_up(model: torch.nn.Module, criterion: torch.nn.Module,
             loss_dict = criterion.get_loss(pred, lbl)
             # 将所有损失按权重求和得到总损失
             losses = sum(loss_dict[k] * criterion.weight_dict[k] for k in loss_dict.keys())
+            if ph_criterion is not None:
+                topo_loss = ph_criterion(pred, lbl)
+                losses = losses + loss_config.topo.weight * topo_loss
+                loss_dict['topo'] = topo_loss.item() # 可选：将 topo_loss 也记录到 log
             optimizer.zero_grad()  # 清除梯度
             losses.backward()  # 反向传播计算梯度
             optimizer.step()  # 优化器更新参数
@@ -88,7 +93,8 @@ def train_warm_up(model: torch.nn.Module, criterion: torch.nn.Module,
 # ------------------------- 单个Epoch训练（常规版） -------------------------
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
-                    device: torch.device, epoch: int, cur_iteration: int, max_iteration: int = -1, grad_scaler=None):
+                    device: torch.device, epoch: int, cur_iteration: int, 
+                    max_iteration: int = -1, loss_config=None, grad_scaler=None):
     """
     单个Epoch的训练过程（常规版）。
 
@@ -109,7 +115,13 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     """
     model.train()
     criterion.train()
-
+    
+   # 如果启用了拓扑损失，则创建实例
+    if loss_config and loss_config.topo.enabled:
+        ph_criterion = PHLoss().to(device)
+    else:
+        ph_criterion = None
+        
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
 
@@ -130,6 +142,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             pred = model(img)
             loss_dict = criterion.get_loss(pred, lbl)
             losses = sum(loss_dict[k] * criterion.weight_dict[k] for k in loss_dict.keys())
+            if ph_criterion is not None:
+                topo_loss = ph_criterion(pred, lbl)
+                losses = losses + loss_config.topo.weight * topo_loss
+                loss_dict['topo'] = topo_loss.item() # 可选：将 topo_loss 也记录到 log
             optimizer.zero_grad()
             losses.backward()
             optimizer.step()
@@ -139,6 +155,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 pred = model(img)
                 loss_dict = criterion.get_loss(pred, lbl)
                 losses = sum(loss_dict[k] * criterion.weight_dict[k] for k in loss_dict.keys())
+                if ph_criterion is not None:
+                    topo_loss = ph_criterion(pred, lbl)
+                    losses = losses + loss_config.topo.weight * topo_loss
+                    loss_dict['topo'] = topo_loss.item() # 可选：将 topo_loss 也记录到 log
             optimizer.zero_grad()
             grad_scaler.scale(losses).backward()
             grad_scaler.step(optimizer)
@@ -216,7 +236,11 @@ def train_one_epoch_SBF(model: torch.nn.Module, criterion: torch.nn.Module,
         optimizer.zero_grad()
         logits = model(input_var)
         loss_dict = criterion.get_loss(logits, lbl)
-        losses = sum(loss_dict[k] * criterion.weight_dict[k] for k in loss_dict.keys() if k in criterion.weight_dict)
+        losses = sum(loss_dict[k] * criterion.weight_dict[k] for k in loss_dict.keys())
+        if ph_criterion is not None:
+            topo_loss = ph_criterion(pred, lbl)
+            losses = losses + loss_config.topo.weight * topo_loss
+            loss_dict['topo'] = topo_loss.item() # 可选：将 topo_loss 也记录到 log
         losses.backward(retain_graph=True)
 
         # 根据梯度计算输入图像的梯度幅值，用于生成 saliency map

@@ -19,7 +19,12 @@ optimizer:
 saliency_balancing_fusion:
   usage: true
   grid_size: 3
-
+  
+loss:
+  topo:
+    enabled: true      # 是否启用拓扑损失
+    weight: 1.0        # 拓扑损失的权重，按需求调整
+    
 data:
   target: main.DataModuleFromConfig
   params:
