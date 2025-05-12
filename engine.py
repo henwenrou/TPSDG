@@ -51,8 +51,8 @@ def train_warm_up(model: torch.nn.Module, criterion: torch.nn.Module,
     cur_iteration = 0
     while True:
         # 遍历数据加载器，并使用tqdm显示进度
-        for i, samples in enumerate(metric_logger.log_every(data_loader, print_freq,
-                                                            'WarmUp with max iteration: {}'.format(warmup_iteration))):
+        for i, samples in enumerate(metric_logger.log_every(data_loader, print_freq,                                                         'WarmUp with max iteration: {}'.format(warmup_iteration))):
+            visual_dict = None
             # 将样本中所有张量移动到指定设备
             for k, v in samples.items():
                 if isinstance(v, torch.Tensor):
@@ -71,10 +71,9 @@ def train_warm_up(model: torch.nn.Module, criterion: torch.nn.Module,
             loss_dict = criterion.get_loss(pred, lbl)
             # 将所有损失按权重求和得到总损失
             losses = sum(loss_dict[k] * criterion.weight_dict[k] for k in loss_dict.keys())
-            if ph_criterion is not None:
-                topo_loss = ph_criterion(pred, lbl)
-                losses = losses + loss_config.topo.weight * topo_loss
-                loss_dict['topo'] = topo_loss.item() # 可选：将 topo_loss 也记录到 log
+            # 多类分割 — softmax；二值分割 — sigmoid（二选一）
+
+
             optimizer.zero_grad()  # 清除梯度
             losses.backward()  # 反向传播计算梯度
             optimizer.step()  # 优化器更新参数
@@ -118,7 +117,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     
    # 如果启用了拓扑损失，则创建实例
     if loss_config and loss_config.topo.enabled:
-        ph_criterion = PHLoss().to(device)
+        ph_criterion = PHLoss(threshold=None).to(device)
         topo_weight = loss_config.topo.weight
     else:
         ph_criterion = None
@@ -130,37 +129,46 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 10
 
+
+
     # 遍历数据加载器，并记录进度
     for i, samples in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
+        img = samples['images'].to(device)
+        lbl = samples['labels'].to(device)
+    
+        # 最好在拿到初始 batch、算出 pred 和 prob/gt 之后做一次检查
+        pred = model(img)
+        prob_fg, gt_fg = get_ph_inputs(pred, lbl)
+        if i == 0 and epoch == 0:
+            print("DEBUG → gt_fg.sum =", gt_fg.sum().item(),
+                  "prob_fg.min/max =", prob_fg.min().item(), prob_fg.max().item())
+            
+        # 再把 samples 里的所有 tensor 都 .to(device)
         for k, v in samples.items():
             if isinstance(v, torch.Tensor):
                 samples[k] = v.to(device)
-
-        img = samples['images']
-        lbl = samples['labels']
-
+        loss_dict = criterion.get_loss(pred, lbl)
+        losses = sum(loss_dict[k] * criterion.weight_dict[k] for k in loss_dict)
         # 判断是否使用混合精度训练
-        if grad_scaler is None:
-            pred = model(img)
-            loss_dict = criterion.get_loss(pred, lbl)
-            losses = sum(loss_dict[k] * criterion.weight_dict[k] for k in loss_dict.keys())
-            if ph_criterion is not None:
-                topo_loss = ph_criterion(pred, lbl)
-                losses = losses + loss_config.topo.weight * topo_loss
-                loss_dict['topo'] = topo_loss.item() # 可选：将 topo_loss 也记录到 log
+        if grad_scaler is None:            
+            if ph_criterion is not None and gt_fg.sum() > 0:     # 有前景才算拓扑
+                topo_loss = ph_criterion(prob_fg, gt_fg)
+                losses = losses + topo_weight * topo_loss
+                loss_dict['topo'] = topo_loss.item()
+            else:
+                loss_dict['topo'] = 0.0
             optimizer.zero_grad()
             losses.backward()
             optimizer.step()
         else:
             # 混合精度训练环境下
-            with torch.cuda.amp.autocast():
-                pred = model(img)
-                loss_dict = criterion.get_loss(pred, lbl)
-                losses = sum(loss_dict[k] * criterion.weight_dict[k] for k in loss_dict.keys())
-                if ph_criterion is not None:
-                    topo_loss = ph_criterion(pred, lbl)
-                    losses = losses + loss_config.topo.weight * topo_loss
-                    loss_dict['topo'] = topo_loss.item() # 可选：将 topo_loss 也记录到 log
+            with torch.cuda.amp.autocast():                
+                if ph_criterion is not None and gt_fg.sum() > 0:     # 有前景才算拓扑
+                    topo_loss = ph_criterion(prob_fg, gt_fg)
+                    losses = losses + topo_weight * topo_loss
+                    loss_dict['topo'] = topo_loss.item()
+                else:
+                    loss_dict['topo'] = 0.0
             optimizer.zero_grad()
             grad_scaler.scale(losses).backward()
             grad_scaler.step(optimizer)
@@ -206,13 +214,13 @@ def train_one_epoch_SBF(model: torch.nn.Module, criterion: torch.nn.Module,
         5. 更新各项指标记录，并定期保存可视化图像；
         6. 当达到最大迭代次数时退出训练。
     """
-    # 实例化拓扑损失
-    if loss_config and hasattr(loss_config, "topo") and loss_config.topo.enabled:
-        ph_criterion = PHLoss().to(device)
-        topo_weight = loss_config.topo.weight
+    # 构造
+    if loss_config and loss_config.topo.enabled:
+        ph_criterion = PHLoss(threshold=None).to(device)
+        topo_weight  = loss_config.topo.weight
     else:
         ph_criterion = None
-        topo_weight = 0.0
+        topo_weight  = 0.0
         
     model.train()
     criterion.train()
@@ -225,81 +233,76 @@ def train_one_epoch_SBF(model: torch.nn.Module, criterion: torch.nn.Module,
     print_freq = 10
     visual_freq = 500  # 可视化频率：每500次迭代保存一次图像
     for i, samples in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
-        for k, v in samples.items():
-            if isinstance(v, torch.Tensor):
-                samples[k] = v.to(device)
-
-        # 从样本中分别获取全局和局部位置尺度增强图像及标签
-        GLA_img = samples['images']
-        LLA_img = samples['aug_images']
-        lbl = samples['labels']
-        if cur_iteration % visual_freq == 0:
-            visual_dict = {}
-            visual_dict['GLA'] = GLA_img.detach().cpu().numpy()[0, 0]
-            visual_dict['LLA'] = LLA_img.detach().cpu().numpy()[0, 0]
-            visual_dict['GT'] = lbl.detach().cpu().numpy()[0]
-        else:
-            visual_dict = None
-
-        # 包装输入图像使其支持梯度计算
-        input_var = Variable(GLA_img, requires_grad=True)
-
+        visual_dict = None
+        # 1) 先把所有 tensor 都送上 GPU
+        GLA_img = samples['images'].to(device)
+        LLA_img = samples['aug_images'].to(device)
+        lbl     = samples['labels'].to(device)
+    
+        # 2) 清空梯度
         optimizer.zero_grad()
-        logits = model(input_var)
+    
+        # 3) 正向、算 topo loss
+        input_var = Variable(GLA_img, requires_grad=True)
+        logits    = model(input_var)               # (B,1,H,W) or (B,C,H,W)
+        prob_fg, gt_fg = get_ph_inputs(logits, lbl)
+    
+        # debug
+        if i == 0 and epoch == 0:
+            print("DEBUG → gt_fg.sum=", gt_fg.sum().item(),
+                  "prob_fg.min/max=", prob_fg.min().item(), prob_fg.max().item())
+    
+        # 标准 loss
         loss_dict = criterion.get_loss(logits, lbl)
-        losses = sum(loss_dict[k] * criterion.weight_dict[k] for k in loss_dict.keys())
+        losses    = sum(loss_dict[k] * criterion.weight_dict[k] for k in loss_dict)
+    
+        # topo loss
         if ph_criterion is not None:
-            topo_loss = ph_criterion(logits, lbl)
-            losses = losses + loss_config.topo.weight * topo_loss
-            loss_dict['topo'] = topo_loss.item() # 可选：将 topo_loss 也记录到 log
+            topo_loss = ph_criterion(prob_fg, gt_fg)
+            losses   += topo_weight * topo_loss
+            loss_dict['topo'] = topo_loss.item()
+        else:
+            loss_dict['topo'] = 0.0
+    
+        # 第一次 backward，只保留计算 saliency 的 graph
         losses.backward(retain_graph=True)
-
-        # 根据梯度计算输入图像的梯度幅值，用于生成 saliency map
-        gradient = torch.sqrt(torch.mean(input_var.grad ** 2, dim=1, keepdim=True)).detach()
+    
+        # 4) 构造 saliency map
+        gradient = torch.sqrt(torch.mean(input_var.grad**2, dim=1, keepdim=True)).detach()
         saliency = get_SBF_map(gradient, config.grid_size)
-
-        if visual_dict is not None:
-            visual_dict['GLA_pred'] = torch.argmax(logits, 1).cpu().numpy()[0]
-
-        if visual_dict is not None:
-            visual_dict['GLA_saliency'] = saliency.detach().cpu().numpy()[0, 0]
-
-        # 混合 GLA 与 LLA：根据 saliency map 进行加权混合
-        mixed_img = GLA_img.detach() * saliency + LLA_img * (1 - saliency)
-        if visual_dict is not None:
-            visual_dict['SBF'] = mixed_img.detach().cpu().numpy()[0, 0]
-
-        # 对混合图像重新包装并计算增强后的预测和损失
-        aug_var = Variable(mixed_img, requires_grad=True)
-        aug_logits = model(aug_var)
+    
+        # 5) 混合图像，再 forward/backward 增强 loss
+        mixed_img = GLA_img * saliency + LLA_img * (1 - saliency)
+        aug_var   = Variable(mixed_img, requires_grad=True)
+        aug_logits= model(aug_var)
         aug_loss_dict = criterion.get_loss(aug_logits, lbl)
-        aug_losses = sum(
-            aug_loss_dict[k] * criterion.weight_dict[k] for k in aug_loss_dict.keys() if k in criterion.weight_dict)
-
+        aug_losses    = sum(
+            aug_loss_dict[k] * criterion.weight_dict[k]
+            for k in aug_loss_dict if k in criterion.weight_dict
+        )
         aug_losses.backward()
-
-        if visual_dict is not None:
-            visual_dict['SBF_pred'] = torch.argmax(aug_logits, 1).cpu().numpy()[0]
-
+    
+        # 6) 最后一步，更新参数
         optimizer.step()
-
-        # 组合标准损失和增强损失，更新指标记录器
+    
+        # 7) 把所有 loss（原始 + topo + _aug）打给 logger
         all_loss_dict = {}
-        for k in loss_dict.keys():
-            if k not in criterion.weight_dict:
-                continue
-            all_loss_dict[k] = loss_dict[k]
-            all_loss_dict[k + '_aug'] = aug_loss_dict[k]
-
+        for k in loss_dict:
+            if k in criterion.weight_dict:
+                all_loss_dict[k] = loss_dict[k]
+                all_loss_dict[k + '_aug'] = aug_loss_dict.get(k, 0.0)
+        all_loss_dict['topo'] = loss_dict['topo']
+    
         metric_logger.update(**all_loss_dict)
-        metric_logger.update(lr=optimizer.param_groups[0]["lr"])
-
+        metric_logger.update(lr=optimizer.param_groups[0]['lr'])
+    
+        # … cur_iteration / 可视化 / break 等照旧
         if cur_iteration >= max_iteration and max_iteration > 0:
             break
 
         # 保存可视化图像
-        if visdir is not None and cur_iteration % visual_freq == 0:
-            fs = int(len(visual_dict) ** 0.5) + 1
+        if visdir is not None and visual_dict is not None:
+            fs = int(len(visual_dict)**0.5) + 1
             for idx, k in enumerate(visual_dict.keys()):
                 plt.subplot(fs, fs, idx + 1)
                 plt.title(k)
@@ -482,3 +485,25 @@ def eval_list_wrapper(vol_list, nclass, label_name):
     error_dict['overall_by_domain'] = np.mean(overall_by_domain)
     print("Overall mean dice by domain {:06.5f}".format(error_dict['overall_by_domain']))
     return error_dict, dsc_table, domain_names
+
+
+# ------------------------------------TOOLS
+EPS = 1e-6                    # 防 0
+
+def safe_prob(t: torch.Tensor):
+    """把概率图限制在 (0,1) 并保证 sum>0；保持原 4D 形状"""
+    t = t.clamp(min=EPS)      # 全 0 时变为极小正数
+    s = t.sum(dim=(2, 3), keepdim=True) + EPS
+    return t / s
+    
+
+def get_ph_inputs(logits, lbl):
+    if logits.shape[1] == 1:
+        prob_fg = torch.sigmoid(logits)           # (B,1,H,W), 0~1 连续
+        gt_fg   = lbl.float().unsqueeze(1)        # 0/1 二值
+    else:
+        prob_all = torch.softmax(logits, dim=1)
+        prob_fg  = 1.0 - prob_all[:, :1]
+        gt_fg    = (lbl > 0).float().unsqueeze(1) 
+
+    return prob_fg, gt_fg
