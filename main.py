@@ -6,8 +6,6 @@ import sys           # 系统相关操作，如修改模块搜索路径
 import datetime      # 日期时间处理
 import importlib     # 动态导入模块
 
-
-
 # 解决 Intel MKL 库重复加载时的冲突问题
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'true'
 
@@ -22,6 +20,7 @@ import numpy as np  # 数值计算库
 import random      # 随机数生成
 from torch.optim import lr_scheduler  # 学习率调度器
 
+from torch.utils.tensorboard import SummaryWriter
 # 用于多进程数据加载时设置每个 worker 的随机种子
 def worker_init_fn(worker_id):
     # 通过当前 numpy 随机数状态和 worker_id 来设置种子，保证每个 worker 的随机性不同
@@ -200,6 +199,7 @@ if __name__ == "__main__":
     cfgdir = os.path.join(logdir, "configs")
     visdir = os.path.join(logdir, "visuals")
     # 创建上述目录，如果不存在则自动创建
+
     for d in [logdir, cfgdir, ckptdir, visdir]:
         os.makedirs(d, exist_ok=True)
 
@@ -294,6 +294,10 @@ if __name__ == "__main__":
     best_dice = 0
     # 获取训练集中的标签名称（用于后续评估指标计算）
     label_name = data.datasets["train"].all_label_names
+
+    # 后续tensorboard writer实例化
+    writer = SummaryWriter(log_dir=logdir)
+
     # 开始训练循环
     for cur_epoch in range(max_epoch):
         # 根据 SBF 配置决定使用哪种单 epoch 训练方法
@@ -307,7 +311,7 @@ if __name__ == "__main__":
 
         # 每 100 个 epoch 进行验证，保存验证集上最佳模型
         if (cur_epoch + 1) % 100 == 0:
-            cur_dice = evaluate(model, val_loader, torch.device('cuda'))
+            cur_dice, val_dice, val_ter = evaluate(model, val_loader, torch.device('cuda'))
             if np.mean(cur_dice) > best_dice:
                 best_dice = np.mean(cur_dice)
                 # 删除之前保存的 val 模型 checkpoint
@@ -320,9 +324,17 @@ if __name__ == "__main__":
             # 输出当前 epoch 的各类别 DICE 指标及平均值
             str_log = f'Epoch [{cur_epoch}]   '
             for i, d in enumerate(cur_dice):
-                str_log += f'Class {i}: {d}, '
-            str_log += f'Validation DICE {np.mean(cur_dice)}/{best_dice}'
+                str_log += f'Class {i}: {d:.4f}, '
+            str_log += (f'Validation DICE {np.mean(cur_dice):.4f}/{best_dice:.4f}  '
+                        f'meanDice {val_dice:.4f}  TER {val_ter:.4f}')
             print(str_log)
+
+            # --- (3) TensorBoard & CSV ---
+            writer.add_scalar('val/Dice', val_dice, cur_epoch)  # <<< NEW
+            writer.add_scalar('val/TER', val_ter, cur_epoch)  # <<< NEW
+            with open(f'{logdir}/metrics.csv', 'a') as f:  # <<< NEW
+                f.write(f'{cur_epoch},{opt.loss.topo.weight},'
+                        f'{val_dice:.4f},{val_ter:.4f}\n')
 
         # 每 50 个 epoch 保存最新的模型 checkpoint
         if (cur_epoch + 1) % 50 == 0:

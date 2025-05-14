@@ -13,6 +13,7 @@ from monai.metrics import compute_meandice  # MONAI中计算平均Dice系数的�
 from torch.autograd import Variable  # 用于包装变量，使其支持自动求导
 from data.saliency_balancing_fusion import get_SBF_map  # 导入获取SBF（Saliency Balancing Fusion）图的函数
 from losses.ph_loss import PHLoss
+from metrics import dice as dice_metric, ter as ter_metric
 
 # 重定义print函数，自动flush标准输出，确保输出不被缓冲
 print = functools.partial(print, flush=True)
@@ -323,8 +324,7 @@ def train_one_epoch_SBF(model: torch.nn.Module, criterion: torch.nn.Module,
 
 # ------------------------- 模型评估函数 -------------------------
 @torch.no_grad()
-def evaluate(model: torch.nn.Module, data_loader: Iterable, device: torch.device):
-    """
+def _evaluate_perclass(model: torch.nn.Module, data_loader: Iterable, device: torch.device):    """
     评估模型在验证/测试集上的分割性能，计算每个类别的平均Dice系数。
 
     参数：
@@ -360,6 +360,36 @@ def evaluate(model: torch.nn.Module, data_loader: Iterable, device: torch.device
     dices = np.nanmean(dices, 0)
     return dices
 
+@torch.no_grad()
+def evaluate(model: torch.nn.Module, data_loader: Iterable, device: torch.device):
+    """
+    包装函数 —— 同时返回:
+        dices_array (旧接口)、
+        mean_dice   (标量)、
+        mean_ter    (标量, λ 不参与)
+    """
+    # 先拿到按类别 Dice（旧逻辑）
+    dices = _evaluate_perclass(model, data_loader, device)
+
+    # 重新跑一次，算 mean-Dice + TER
+    model.eval()
+    dice_list, ter_list = [], []
+    for samples in data_loader:
+        for k, v in samples.items():
+            if isinstance(v, torch.Tensor):
+                samples[k] = v.to(device)
+        img = samples['images']
+        lbl = samples['labels']
+        logits = model(img)
+        prob = torch.sigmoid(logits) if logits.shape[1] == 1 else torch.softmax(logits, dim=1)
+        dice_list.append(dice_metric(prob, lbl))
+        ter_list .append(ter_metric (prob, lbl))
+
+    mean_dice = sum(dice_list) / len(dice_list)
+    mean_ter  = sum(ter_list ) / len(ter_list)
+
+    print(f"[EVAL] mean-Dice={mean_dice:.4f}  mean-TER={mean_ter:.4f}")
+    return dices, mean_dice, mean_ter      # ← 关键：三个值
 
 # ------------------------- 预测封装函数 -------------------------
 def prediction_wrapper(model, test_loader, epoch, label_name, mode='base', save_prediction=False):

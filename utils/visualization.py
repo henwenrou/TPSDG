@@ -74,3 +74,9 @@ def visualize_nifti(image_path, label_path=None, slice_idx=None):
 
     plt.tight_layout()
     plt.show()
+
+visualize_nifti(
+    image_path='/Users/RexRyder/PycharmProjects/D2SDG/data/processed/abdominal/SABSCT/processed/image_28.nii.gz',
+    label_path='/Users/RexRyder/PycharmProjects/D2SDG/data/processed/abdominal/SABSCT/processed/label_28.nii.gz',
+    slice_idx=60
+)
