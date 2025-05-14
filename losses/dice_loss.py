@@ -26,7 +26,9 @@ class DiceLoss(nn.Module):
         cardinality = (probs + targets_onehot).sum(dim=(2, 3))
         dice_score = (2. * intersection + self.smooth) / (cardinality + self.smooth)
         # dice loss = 1 - 平均 dice_score
-        dice_loss = 1 - dice_score.mean()
+        # targets_onehot.shape == (B,C,H,W) ; 背景默认 id==0
+        fg_mask = torch.arange(num_classes, device=logits.device) != 0
+        dice_loss = 1 - dice_score[:, fg_mask].mean()
         return dice_loss
 
 if __name__ == "__main__":

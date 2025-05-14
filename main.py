@@ -169,7 +169,7 @@ torch.backends.cudnn.benchmark = True
 # 程序主入口
 if __name__ == "__main__":
     # 获取当前时间，用于生成实验名称
-    now = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     # 再次将当前工作目录添加到模块搜索路径中，确保可以导入本目录下的模块
     sys.path.append(os.getcwd())
     # 构造参数解析器
@@ -310,34 +310,43 @@ if __name__ == "__main__":
             scheduler.step()
 
         # 每 100 个 epoch 进行验证，保存验证集上最佳模型
-        if (cur_epoch + 1) % 10 == 0:
+        if (cur_epoch + 1) % 1 == 0:
             cur_dice, val_dice, val_ter = evaluate(model, val_loader, torch.device('cuda'))
             if np.mean(cur_dice) > best_dice:
-                best_dice = np.mean(cur_dice)
-                # 删除之前保存的 val 模型 checkpoint
-                for f in os.listdir(ckptdir):
-                    if 'val' in f:
-                        os.remove(os.path.join(ckptdir, f))
-                # 保存当前 epoch 的模型 checkpoint
-                torch.save({'model': model.state_dict()}, os.path.join(ckptdir, f'val_best_epoch_{cur_epoch}.pth'))
+                mean_cur_dice = np.nanmean(cur_dice)          # 忽略 NaN，确保 float
+                if np.isnan(mean_cur_dice):                   # 全 NaN 时直接跳过
+                    logger.warning("cur_dice 全为 NaN，跳过本轮 best_dice 更新")
+                elif mean_cur_dice > best_dice:
+                    mean_d = np.nanmean(cur_dice)
+                    if mean_d > best_dice:
+                        best_dice = mean_cur_dice
+                        # 删除之前保存的 val 模型 checkpoint
+                        for f in os.listdir(ckptdir):
+                            if 'val' in f:
+                                os.remove(os.path.join(ckptdir, f))
+                        # 保存当前 epoch 的模型 checkpoint
+                        torch.save({'model': model.state_dict()}, os.path.join(ckptdir, f'val_best_epoch_{cur_epoch}.pth'))
+                    else:
+                        logger.warning("cur_dice 无效，跳过本轮 best_dice 更新")
 
-            # 输出当前 epoch 的各类别 DICE 指标及平均值
-            str_log = f'Epoch [{cur_epoch}]   '
-            for i, d in enumerate(cur_dice):
-                str_log += f'Class {i}: {d:.4f}, '
-            str_log += (f'Validation DICE {np.mean(cur_dice):.4f}/{best_dice:.4f}  '
-                        f'meanDice {val_dice:.4f}  TER {val_ter:.4f}')
-            print(str_log)
+    
+                # 输出当前 epoch 的各类别 DICE 指标及平均值
+                str_log = f'Epoch [{cur_epoch}]   '
+                for i, d in enumerate(cur_dice):
+                    str_log += f'Class {i}: {d:.4f}, '
+                str_log += (f'Validation DICE {np.mean(cur_dice):.4f}/{best_dice:.4f}  '
+                            f'meanDice {val_dice:.4f}  TER {val_ter:.4f}')
+                print(str_log)
 
-            with open(log_file, 'a') as f:
-                f.write(str_log + '\n')
+                with open(log_file, 'a') as f:
+                    f.write(str_log + '\n')
 
             # --- (3) TensorBoard & CSV ---
             writer.add_scalar('val/Dice', val_dice, cur_epoch)  # <<< NEW
             writer.add_scalar('val/TER', val_ter, cur_epoch)  # <<< NEW
             with open(f'{logdir}/metrics.csv', 'a') as f:  # <<< NEW
-                f.write(f'{cur_epoch},{opt.loss.topo.weight},'
-                        f'{val_dice:.4f},{val_ter:.4f}\n')
+                f.write(f"{cur_epoch},{loss_config.topo.weight},{val_dice:.4f},{val_ter:.4f}\n")
+
 
         # 每 50 个 epoch 保存最新的模型 checkpoint
         if (cur_epoch + 1) % 50 == 0:

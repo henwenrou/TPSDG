@@ -324,7 +324,8 @@ def train_one_epoch_SBF(model: torch.nn.Module, criterion: torch.nn.Module,
 
 # ------------------------- 模型评估函数 -------------------------
 @torch.no_grad()
-def _evaluate_perclass(model: torch.nn.Module, data_loader: Iterable, device: torch.device):    """
+def _evaluate_perclass(model: torch.nn.Module, data_loader: Iterable, device: torch.device):    
+    """
     评估模型在验证/测试集上的分割性能，计算每个类别的平均Dice系数。
 
     参数：
@@ -340,8 +341,13 @@ def _evaluate_perclass(model: torch.nn.Module, data_loader: Iterable, device: to
     model.eval()
 
     def convert_to_one_hot(tensor, num_c):
-        return F.one_hot(tensor, num_c).permute((0, 3, 1, 2))
-
+        """
+        tensor shape 允许 (B,H,W) 或 (B,1,H,W)
+        返回 (B,C,H,W) one-hot
+        """
+        if tensor.ndim == 4 and tensor.size(1) == 1:
+            tensor = tensor.squeeze(1)          # -> (B,H,W)
+        return F.one_hot(tensor.long(), num_c).permute(0, 3, 1, 2).float()
     dices = []
     for samples in data_loader:
         for k, v in samples.items():
@@ -380,8 +386,11 @@ def evaluate(model: torch.nn.Module, data_loader: Iterable, device: torch.device
                 samples[k] = v.to(device)
         img = samples['images']
         lbl = samples['labels']
+        if lbl.ndim == 3:           # (B,H,W) → (B,1,H,W)
+            lbl = lbl.unsqueeze(1)
         logits = model(img)
-        prob = torch.sigmoid(logits) if logits.shape[1] == 1 else torch.softmax(logits, dim=1)
+        prob   = torch.sigmoid(logits) if logits.shape[1]==1 else torch.softmax(logits,1)
+        
         dice_list.append(dice_metric(prob, lbl))
         ter_list .append(ter_metric (prob, lbl))
 
