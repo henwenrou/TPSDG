@@ -169,7 +169,7 @@ torch.backends.cudnn.benchmark = True
 # 程序主入口
 if __name__ == "__main__":
     # 获取当前时间，用于生成实验名称
-    now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    now = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     # 再次将当前工作目录添加到模块搜索路径中，确保可以导入本目录下的模块
     sys.path.append(os.getcwd())
     # 构造参数解析器
@@ -199,7 +199,7 @@ if __name__ == "__main__":
     cfgdir = os.path.join(logdir, "configs")
     visdir = os.path.join(logdir, "visuals")
     # 创建上述目录，如果不存在则自动创建
-
+    log_file = os.path.join(ckptdir, 'evaluate.log')
     for d in [logdir, cfgdir, ckptdir, visdir]:
         os.makedirs(d, exist_ok=True)
 
@@ -310,7 +310,7 @@ if __name__ == "__main__":
             scheduler.step()
 
         # 每 100 个 epoch 进行验证，保存验证集上最佳模型
-        if (cur_epoch + 1) % 100 == 0:
+        if (cur_epoch + 1) % 10 == 0:
             cur_dice, val_dice, val_ter = evaluate(model, val_loader, torch.device('cuda'))
             if np.mean(cur_dice) > best_dice:
                 best_dice = np.mean(cur_dice)
@@ -328,6 +328,9 @@ if __name__ == "__main__":
             str_log += (f'Validation DICE {np.mean(cur_dice):.4f}/{best_dice:.4f}  '
                         f'meanDice {val_dice:.4f}  TER {val_ter:.4f}')
             print(str_log)
+
+            with open(log_file, 'a') as f:
+                f.write(str_log + '\n')
 
             # --- (3) TensorBoard & CSV ---
             writer.add_scalar('val/Dice', val_dice, cur_epoch)  # <<< NEW
