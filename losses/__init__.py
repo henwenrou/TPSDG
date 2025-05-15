@@ -6,7 +6,8 @@ class SetCriterion(nn.Module):
     def __init__(self):
         super().__init__()
         self.ce_loss=nn.CrossEntropyLoss()
-        self.dice_loss=DiceLoss(to_onehot_y=True,softmax=True,squared_pred=True,smooth_nr=0.0,smooth_dr=1e-6)
+        self.dice_loss=DiceLoss(include_background=False,
+                                to_onehot_y=True,softmax=True,squared_pred=True,smooth_nr=0.0,smooth_dr=1e-6)
         self.weight_dict={'ce_loss':1, 'dice_loss':1}
 
     def get_loss(self,  pred, gt):

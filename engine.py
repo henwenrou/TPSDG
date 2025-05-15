@@ -10,14 +10,16 @@ import functools  # 函数工具库，用于函数包装、部分函数应用等
 from tqdm import tqdm  # 进度条工具，用于显示迭代进度
 import torch.nn.functional as F  # PyTorch中常用的函数接口，例如one_hot等
 from monai.metrics import compute_meandice  # MONAI中计算平均Dice系数的函数
+from monai.losses import DiceLoss
 from torch.autograd import Variable  # 用于包装变量，使其支持自动求导
 from data.saliency_balancing_fusion import get_SBF_map  # 导入获取SBF（Saliency Balancing Fusion）图的函数
 from losses.ph_loss import PHLoss
 from metrics import dice as dice_metric, ter as ter_metric
 
+
 # 重定义print函数，自动flush标准输出，确保输出不被缓冲
 print = functools.partial(print, flush=True)
-
+EPS = 1e-6                    # 防 0
 
 # ------------------------- 训练预热阶段 -------------------------
 def train_warm_up(model: torch.nn.Module, criterion: torch.nn.Module,
@@ -323,49 +325,62 @@ def train_one_epoch_SBF(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 # ------------------------- 模型评估函数 -------------------------
+
 @torch.no_grad()
-def _evaluate_perclass(model: torch.nn.Module, data_loader: Iterable, device: torch.device):    
+def _evaluate_perclass(model: torch.nn.Module, data_loader: Iterable, device: torch.device):
     """
-    评估模型在验证/测试集上的分割性能，计算每个类别的平均Dice系数。
-
-    参数：
-        model: 待评估模型
-        data_loader: 数据加载器
-        device: 设备（如GPU）
-
-    过程：
-        遍历所有样本，模型预测后将预测结果转换为 one-hot 编码，
-        与 ground truth 进行对比，利用 MONAI 的 compute_meandice 计算 Dice 系数，
-        最后求各类别Dice的均值作为评估结果。
+    按类别评价——返回每个前景类别的平均 Dice
     """
     model.eval()
+    per_batch_scores = []
 
-    def convert_to_one_hot(tensor, num_c):
-        """
-        tensor shape 允许 (B,H,W) 或 (B,1,H,W)
-        返回 (B,C,H,W) one-hot
-        """
-        if tensor.ndim == 4 and tensor.size(1) == 1:
-            tensor = tensor.squeeze(1)          # -> (B,H,W)
-        return F.one_hot(tensor.long(), num_c).permute(0, 3, 1, 2).float()
-    dices = []
     for samples in data_loader:
-        for k, v in samples.items():
-            if isinstance(v, torch.Tensor):
-                samples[k] = v.to(device)
-        img = samples['images']
-        lbl = samples['labels']
-        logits = model(img)
-        num_classes = logits.size(1)
-        pred = torch.argmax(logits, dim=1)
-        one_hot_pred = convert_to_one_hot(pred, num_classes)
-        one_hot_gt = convert_to_one_hot(lbl, num_classes)
-        dice = compute_meandice(one_hot_pred, one_hot_gt, include_background=False)
-        dices.append(dice.cpu().numpy())
-    dices = np.concatenate(dices, 0)
-    dices = np.nanmean(dices, 0)
-    return dices
+        # 1) 移动到 device
+        img = samples['images'].to(device)
+        lbl = samples['labels'].to(device)
+        # 如果标签形状是 (B,1,H,W)，去掉通道维
+        if lbl.ndim == img.ndim:
+            lbl = lbl.squeeze(1)
 
+        # 2) 前向
+        logits = model(img)             # (B, C, H, W) 或 (B,1,H,W)
+        B, C = logits.shape[0], logits.shape[1]
+
+        # 3) 二分类扩通道
+        if C == 1:
+            logits = torch.cat([1 - logits, logits], dim=1)
+            C = 2
+
+        # 4) 获取硬预测
+        preds = torch.argmax(logits, dim=1)   # (B, H, W)
+
+        # 5) One-hot 编码
+        p1 = F.one_hot(preds, C).permute(0,3,1,2).float()  # (B,C,H,W)
+        t1 = F.one_hot(lbl.long(), C).permute(0,3,1,2).float()
+
+        # 6) 展平空间维
+        p_flat = p1.reshape(B, C, -1)  # (B,C,N)
+        t_flat = t1.reshape(B, C, -1)
+
+        # 7) 计算交并集
+        inter = (p_flat * t_flat).sum(-1)             # (B, C)
+        union = p_flat.sum(-1) + t_flat.sum(-1)       # (B, C)
+
+        # 8) Dice 公式
+        dice_scores = (2 * inter + EPS) / (union + EPS)  # (B, C)
+
+        # 9) 剔除背景类 0
+        if C > 1:
+            dice_scores = dice_scores[:, 1:]           # (B, C-1)
+
+        # 10) 对 batch 求均值，得到 (C-1,) 向量
+        per_batch_scores.append(dice_scores.mean(0).cpu().numpy())
+
+    # 合并所有 batch，再对每个类取平均
+    all_scores = np.stack(per_batch_scores, 0)          # (num_batches, C-1)
+    per_class_dice = np.nanmean(all_scores, axis=0)    # (C-1,)
+
+    return per_class_dice
 @torch.no_grad()
 def evaluate(model: torch.nn.Module, data_loader: Iterable, device: torch.device):
     """
@@ -391,7 +406,7 @@ def evaluate(model: torch.nn.Module, data_loader: Iterable, device: torch.device
         logits = model(img)
         prob   = torch.sigmoid(logits) if logits.shape[1]==1 else torch.softmax(logits,1)
         
-        dice_list.append(dice_metric(prob, lbl))
+        dice_list.append(dice_metric(logits, lbl))
         ter_list .append(ter_metric (prob, lbl))
 
     mean_dice = sum(dice_list) / len(dice_list)
@@ -527,7 +542,7 @@ def eval_list_wrapper(vol_list, nclass, label_name):
 
 
 # ------------------------------------TOOLS
-EPS = 1e-6                    # 防 0
+
 
 def safe_prob(t: torch.Tensor):
     """把概率图限制在 (0,1) 并保证 sum>0；保持原 4D 形状"""

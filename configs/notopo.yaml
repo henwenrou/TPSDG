@@ -22,7 +22,7 @@ saliency_balancing_fusion:
   
 loss:
   topo:
-    enabled: true      # 是否启用拓扑损失
+    enabled: false     # 是否启用拓扑损失
     weight: 1.0        # 拓扑损失的权重，按需求调整
     
 data:

@@ -1,12 +1,10 @@
-#!/usr/bin/env bash
-LAMBDAS=(0 0.1 0.3 0.5 1 2)          # 粗网格，自行增删
+#!/bin/bash
+# run_grid.sh
 
-for L in "${LAMBDAS[@]}"; do
-  LOGDIR=runs/lambda_${L}
+lambdas=(0.0 0.1 0.2 0.5 1.0 2.0)
+for lam in "${lambdas[@]}"; do
+  echo "===== Starting experiment with lambda = $lam ====="
   python main.py \
-        --base configs/sc.yaml \
-        --logdir ${LOGDIR} \
-        optimizer.max_epoch=10 \              # 先跑 10 epoch
-        loss.topo.enabled=$( [ "$L" = "0" ] && echo false || echo true ) \
-        loss.topo.weight=${L}
+    -b configs/sc.yaml \
+    --loss.topo.weight $lam
 done

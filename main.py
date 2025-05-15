@@ -19,8 +19,19 @@ from losses import SetCriterion  # 导入自定义的损失函数
 import numpy as np  # 数值计算库
 import random      # 随机数生成
 from torch.optim import lr_scheduler  # 学习率调度器
-
 from torch.utils.tensorboard import SummaryWriter
+from monai.losses import DiceLoss
+
+class Tee:
+    def __init__(self, *files):
+        self.files = files
+    def write(self, data):
+        for f in self.files:
+            f.write(data)
+    def flush(self):
+        for f in self.files:
+            f.flush()
+            
 # 用于多进程数据加载时设置每个 worker 的随机种子
 def worker_init_fn(worker_id):
     # 通过当前 numpy 随机数状态和 worker_id 来设置种子，保证每个 worker 的随机性不同
@@ -202,7 +213,14 @@ if __name__ == "__main__":
     log_file = os.path.join(ckptdir, 'evaluate.log')
     for d in [logdir, cfgdir, ckptdir, visdir]:
         os.makedirs(d, exist_ok=True)
-
+        
+    # ─── 将所有 stdout 和 stderr 分流到控制台和 run.log ───
+    log_run_file = os.path.join(logdir, 'run.log')
+    run_log_f = open(log_run_file, 'w')
+    tee = Tee(sys.stdout, run_log_f)
+    sys.stdout = tee
+    sys.stderr = tee
+    
     # 加载所有基础配置文件，并合并命令行中未识别的参数
     configs = [OmegaConf.load(cfg) for cfg in opt.base]
     cli = OmegaConf.from_dotlist(unknown)
@@ -218,6 +236,8 @@ if __name__ == "__main__":
     
     # 根据模型配置实例化模型
     model = instantiate_from_config(model_config)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     if torch.cuda.is_available():
         model = model.cuda()
 
@@ -240,8 +260,8 @@ if __name__ == "__main__":
         if k in optimizer_config:
             opt_params[k] = optimizer_config[k]
 
-    # 实例化损失函数（SetCriterion）
-    criterion = SetCriterion()
+    # 实例化损失函数
+    criterion = SetCriterion().to(device)
 
     print('optimization parameters: ', opt_params)
     # 根据优化器配置中的 target 字符串（例如 'torch.optim.SGD'）实例化优化器
@@ -265,7 +285,9 @@ if __name__ == "__main__":
         print('detect identified max iteration, set max_epoch to 999')
     else:
         max_epoch = optimizer_config.max_epoch
+    print(f"→ max_epoch = {max_epoch}, max_iter = {optimizer_config.max_iter}")
 
+    print(f"→ Using topo.weight = {loss_config.topo.weight}")
     # 实例化数据模块并准备数据
     data = instantiate_from_config(config.data)
     data.prepare_data()
@@ -300,6 +322,7 @@ if __name__ == "__main__":
 
     # 开始训练循环
     for cur_epoch in range(max_epoch):
+        print(f"=== BEGIN EPOCH {cur_epoch} ===")
         # 根据 SBF 配置决定使用哪种单 epoch 训练方法
         if SBF_config.usage:
             cur_iter = train_one_epoch_SBF(model, criterion, train_loader, opt, torch.device('cuda'), cur_epoch, cur_iter, optimizer_config.max_iter, SBF_config, visdir, loss_config)
@@ -353,7 +376,25 @@ if __name__ == "__main__":
             torch.save({'model': model.state_dict()}, os.path.join(ckptdir, 'latest.pth'))
 
         # 如果达到最大迭代次数，则保存最新模型并结束训练
-        if cur_iter >= optimizer_config.max_iter and optimizer_config.max_iter > 0:
+        if cur_epoch + 1 >= max_epoch:
             torch.save({'model': model.state_dict()}, os.path.join(ckptdir, 'latest.pth'))
             print(f'End training with iteration {cur_iter}')
             break
+            
+    torch.save({'model': model.state_dict()},os.path.join(ckptdir, 'final.pth'))
+    # ——— 打印 checkpoints 目录里的所有文件 ———
+    print("=== Checkpoints saved in:", ckptdir, "===")
+    for fname in sorted(os.listdir(ckptdir)):
+        fpath = os.path.join(ckptdir, fname)
+        # 如果想看文件大小，可以加上 os.path.getsize
+        size_mb = os.path.getsize(fpath) / (1024 * 1024)
+        print(f"  {fname}    ({size_mb:.2f} MB)")
+    print("=== TRAINING LOOP COMPLETED ===")
+    # —— 显式优雅收尾，避免析构时 unraisablehook 异常 —— 
+    # 1) 先把 TensorBoard writer 关掉
+    writer.close()
+    # 2) 恢复 sys.stdout / sys.stderr，避免 Tee 在析构时写异常
+    sys.stdout = sys.__stdout__
+    sys.stderr = sys.__stderr__
+    # 3) 关掉 run.log 文件句柄
+    run_log_f.close()
