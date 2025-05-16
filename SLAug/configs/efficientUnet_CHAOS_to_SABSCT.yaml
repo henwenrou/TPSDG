@@ -4,7 +4,7 @@ model:
     encoder_name: efficientnet-b2
     encoder_weights: null
     in_channels: 1
-    classes: 4
+    classes: 5
     activation: null
 
 optimizer:
@@ -18,7 +18,7 @@ optimizer:
 
 saliency_balancing_fusion:
   usage: true
-  grid_size: 18
+  grid_size: 3
 
 data:
   target: main.DataModuleFromConfig
@@ -26,21 +26,21 @@ data:
     batch_size: 32
     num_workers: 8
     train:
-      target: data.CardiacDataset.get_training
+      target: dataloaders.AbdominalDataset.get_training
       params:
         location_scale: true
         modality:
-          - bSSFP
+          - CHAOST2
         tile_z_dim: 1
     validation:
-      target: data.CardiacDataset.get_validation
+      target: dataloaders.AbdominalDataset.get_validation
       params:
         modality:
-          - bSSFP
+          - CHAOST2
         tile_z_dim: 1
     test:
-      target: data.CardiacDataset.get_test
+      target: dataloaders.AbdominalDataset.get_test_all
       params:
         modality:
-          - LGE
+          - SABSCT
         tile_z_dim: 1

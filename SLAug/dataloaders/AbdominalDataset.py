@@ -1,21 +1,22 @@
-# CardicacDataset.py
 # Dataloader for abdominal images
 import glob
 import numpy as np
-import data.niftiio as nio
-import data.transform_utils as trans
+import dataloaders.niftiio as nio
+import dataloaders.transform_utils as trans
 import torch
 import os
 import platform
 import torch.utils.data as torch_data
-from functools import partial
+import math
+import itertools
 from .location_scale_augmentation import LocationScaleAugmentation
 hostname = platform.node()
-BASEDIR = './data/processed/cardiac/processed'
-print(f'Adjusted BASEDIR to include processed subfolder: {BASEDIR}')
+# folder for datasets
+BASEDIR = './data/abdominal/'
 print(f'Running on machine {hostname}, using dataset from {BASEDIR}')
-LABEL_NAME = ["bg", "Myocardium",  "Lventricle","Rventricle"]
-from data.niftiio import read_nii_bysitk
+LABEL_NAME = ["bg", "liver", "rk", "lk", "spleen"]
+
+from dataloaders.niftiio import read_nii_bysitk
 
 class mean_std_norm(object):
     def __init__(self,mean=None,std=None):
@@ -55,16 +56,16 @@ def get_normalize_op(fids, domain=False):
         _mean, _std = get_statistics(fids)
         return mean_std_norm(_mean, _std)
 
-
-class CardiacDataset(torch_data.Dataset):
-    def __init__(self,  mode, transforms, base_dir, domains: list, tile_z_dim = 3, extern_norm_fn = None, location_scale=False):
+class AbdominalDataset(torch_data.Dataset):
+    def __init__(self,  mode, transforms, base_dir, domains: list,  idx_pct = [0.7, 0.1, 0.2], tile_z_dim = 3, extern_norm_fn = None, location_scale=False):
         """
         Args:
             mode:               'train', 'val', 'test', 'test_all'
             transforms:         naive data augmentations used by default. Photometric transformations slightly better than those configured by Zhang et al. (bigaug)
+            idx_pct:            train-val-test split for source domain
             extern_norm_fn:     feeding data normalization functions from external, only concerns CT-MR cross domain scenario
         """
-        super(CardiacDataset, self).__init__()
+        super(AbdominalDataset, self).__init__()
         self.transforms=transforms
         self.is_train = True if mode == 'train' else False
         self.phase = mode
@@ -73,21 +74,14 @@ class CardiacDataset(torch_data.Dataset):
         self.nclass = len(LABEL_NAME)
         self.tile_z_dim = tile_z_dim
         self._base_dir = base_dir
+        self.idx_pct = idx_pct
 
         self.img_pids = {}
         for _domain in self.domains: # load file names
-            # collect image IDs by domain, using os.path.join for cross-platform safety
-            img_pattern = os.path.join(self._base_dir, _domain, 'image_*.nii.gz')
-            found = glob.glob(img_pattern)
-            if not found:
-                raise FileNotFoundError(f"No image files found for domain '{_domain}' in {os.path.dirname(img_pattern)}")
-            self.img_pids[_domain] = sorted(
-                [os.path.basename(fid).split("_")[-1].split(".nii.gz")[0] for fid in found],
-                key=lambda x: int(x)
-            )
-            print(f"Found {len(self.img_pids[_domain])} image files for domain {_domain} in {os.path.dirname(img_pattern)}")
+            self.img_pids[_domain] = sorted([ fid.split("_")[-1].split(".nii.gz")[0] for fid in glob.glob(self._base_dir + "/" +  _domain  + "/processed/image_*.nii.gz") ], key = lambda x: int(x))
 
-        self.scan_ids = self.__get_scanids() # train val test split in terms of patient ids
+        self.scan_ids = self.__get_scanids(mode, idx_pct) # train val test split in terms of patient ids
+
         self.info_by_scan = None
         self.sample_list = self.__search_samples(self.scan_ids) # image files names according to self.scan_ids
         if self.is_train:
@@ -99,7 +93,7 @@ class CardiacDataset(torch_data.Dataset):
         elif mode == 'test_all': # Choose this when being used as a target domain testing set. Liu et al.
             self.pid_curr_load = self.scan_ids
 
-        self.normalize_op = extern_norm_fn([itm['img_fid'] for _, itm in self.sample_list[self.domains[0]].items()])
+        self.normalize_op = extern_norm_fn([ itm['img_fid'] for _, itm in self.sample_list[self.domains[0]].items() ])
 
         print(f'For {self.phase} on {[_dm for _dm in self.domains]} using scan ids {self.pid_curr_load}')
 
@@ -112,18 +106,35 @@ class CardiacDataset(torch_data.Dataset):
         else:
             self.location_scale = None
 
-    def __get_scanids(self):
-        _domain = self.domains[0]
-        if _domain == 'bSSFP' and self.phase in ['train','test']:
-            return {'bSSFP':['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34','35']}
-        if _domain == 'bSSFP' and self.phase == 'val':
-            return {'bSSFP': ['36', '37', '38', '39', '40', '41', '42', '43', '44', '45']}
-        elif _domain == 'LGE' and self.phase=='val':
-            return {'LGE':['1', '2', '3', '4', '5']}
-        elif _domain == 'LGE' and self.phase in ['train','test']:
-            return {'LGE':['6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18','19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34','35', '36', '37', '38', '39', '40', '41', '42', '43', '44', '45']}
-        else:
-            raise NotImplementedError
+    def __get_scanids(self, mode, idx_pct):
+        """
+        index by domains given that we might need to load multi-domain data
+        idx_pct: [0.7 0.1 0.2] for train val test. with order te val tr
+        """
+        tr_ids      = {}
+        val_ids     = {}
+        te_ids      = {}
+        te_all_ids  = {}
+
+        for _domain in self.domains:
+            dset_size   = len(self.img_pids[_domain])
+            tr_size     = round(dset_size * idx_pct[0])
+            val_size    = math.floor(dset_size * idx_pct[1])
+            te_size     = dset_size - tr_size - val_size
+
+            te_ids[_domain]     = self.img_pids[_domain][: te_size]
+            val_ids[_domain]    = self.img_pids[_domain][te_size: te_size + val_size]
+            tr_ids[_domain]     = self.img_pids[_domain][te_size + val_size: ]
+            te_all_ids[_domain] = list(itertools.chain(tr_ids[_domain], te_ids[_domain], val_ids[_domain]   ))
+
+        if self.phase == 'train':
+            return tr_ids
+        elif self.phase == 'val':
+            return val_ids
+        elif self.phase == 'test':
+            return te_ids
+        elif self.phase == 'test_all':
+            return te_all_ids
 
     def __search_samples(self, scan_ids):
         """search for filenames for images and masks
@@ -134,8 +145,8 @@ class CardiacDataset(torch_data.Dataset):
             for curr_id in id_list:
                 curr_dict = {}
 
-                _img_fid = os.path.join(self._base_dir, _domain   ,f'image_{curr_id}.nii.gz')
-                _lb_fid  = os.path.join(self._base_dir, _domain   ,f'label_{curr_id}.nii.gz')
+                _img_fid = os.path.join(self._base_dir, _domain , 'processed'  ,f'image_{curr_id}.nii.gz')
+                _lb_fid  = os.path.join(self._base_dir, _domain , 'processed', f'label_{curr_id}.nii.gz')
 
                 curr_dict["img_fid"] = _img_fid
                 curr_dict["lbs_fid"] = _lb_fid
@@ -143,10 +154,12 @@ class CardiacDataset(torch_data.Dataset):
 
         return out_list
 
+
     def __read_dataset(self):
         """
         Read the dataset into memory
         """
+
         out_list = []
         self.info_by_scan = {} # meta data of each scan
         glb_idx = 0 # global index of a certain slice in a certain scan in entire dataset
@@ -161,7 +174,7 @@ class CardiacDataset(torch_data.Dataset):
 
                 img = np.float32(img)
                 if self.normalize_op.mean is not None:
-                    vol_info={'vol_vmin':img.min(),'vol_vmax':img.max(),'vol_mean':self.normalize_op.mean, 'vol_std':self.normalize_op.mean}# NOTE there is a bug, 'vol_std':self.normalize_op.std
+                    vol_info={'vol_vmin':img.min(),'vol_vmax':img.max(),'vol_mean':self.normalize_op.mean,'vol_std':self.normalize_op.mean}# NOTE there is a bug, 'vol_std':self.normalize_op.std
                 else:
                     vol_info = {'vol_vmin': img.min(), 'vol_vmax': img.max(), 'vol_mean': img.mean(), 'vol_std': img.std()}
                 img = self.normalize_op(img)
@@ -213,6 +226,7 @@ class CardiacDataset(torch_data.Dataset):
 
         return out_list
 
+
     def __getitem__(self, index):
         index = index % len(self.actual_dataset)
         curr_dict = self.actual_dataset[index]
@@ -220,21 +234,21 @@ class CardiacDataset(torch_data.Dataset):
             if self.location_scale is not None:
                 img = curr_dict["img"].copy()
                 lb = curr_dict["lb"].copy()
-                img = self.denorm_(img, curr_dict['vol_info'])
+                img= self.denorm_(img,curr_dict['vol_info'])
 
                 GLA = self.location_scale.Global_Location_Scale_Augmentation(img.copy())
-                GLA = self.renorm_(GLA, curr_dict['vol_info'])
+                GLA = self.renorm_( GLA , curr_dict['vol_info'])
 
                 LLA = self.location_scale.Local_Location_Scale_Augmentation(img.copy(), lb.astype(np.int32))
-                LLA = self.renorm_(LLA, curr_dict['vol_info'])
+                LLA = self.renorm_( LLA, curr_dict['vol_info'])
                 comp = np.concatenate([GLA, LLA, curr_dict["lb"]], -1)
                 if self.transforms:
                     timg, lb = self.transforms(comp, c_img=2, c_label=1, nclass=self.nclass, is_train=self.is_train,
-                                               use_onehot=False)
+                                              use_onehot=False)
                     GLA, LLA = np.split(timg, 2, -1)
-                img = GLA
+                img=GLA
 
-                aug_img = LLA
+                aug_img=LLA
                 aug_img = np.float32(aug_img)
                 aug_img = np.transpose(aug_img, (2, 0, 1))
                 aug_img = torch.from_numpy(aug_img)
@@ -247,7 +261,7 @@ class CardiacDataset(torch_data.Dataset):
         else:
             img = curr_dict['img']
             lb = curr_dict['lb']
-            aug_img = 1
+            aug_img=1
 
         img = np.float32(img)
         lb = np.float32(lb)
@@ -295,30 +309,38 @@ class CardiacDataset(torch_data.Dataset):
         return len(self.actual_dataset)
 
 tr_func  = trans.transform_with_label(trans.tr_aug)
-
-def get_training(modality, location_scale,  tile_z_dim = 3):
-    return CardiacDataset(
+from functools import partial
+def get_training(modality,location_scale, idx_pct = [0.7, 0.1, 0.2], tile_z_dim = 3):
+    return AbdominalDataset(idx_pct = idx_pct,\
         mode = 'train',\
         domains = modality,\
         transforms = tr_func,\
         base_dir = BASEDIR,\
-        extern_norm_fn = partial(get_normalize_op,domain=True),
+        extern_norm_fn = partial(get_normalize_op,domain=True), # normalization function is decided by domain
         tile_z_dim = tile_z_dim,
-        location_scale=location_scale
-    )
+        location_scale=location_scale)
 
-def get_validation(modality,  tile_z_dim = 3):
-     return CardiacDataset(
+def get_validation(modality, idx_pct = [0.7, 0.1, 0.2], tile_z_dim = 3):
+     return AbdominalDataset(idx_pct = idx_pct,\
         mode = 'val',\
         transforms = None,\
         domains = modality,\
         base_dir = BASEDIR,\
-        extern_norm_fn =partial(get_normalize_op,domain=False),
+        extern_norm_fn =  partial(get_normalize_op,domain=False),
         tile_z_dim = tile_z_dim)
 
-def get_test(modality,  tile_z_dim = 3):
-     return CardiacDataset(
+def get_test(modality,  tile_z_dim = 3, idx_pct = [0.7, 0.1, 0.2]):
+     return AbdominalDataset(idx_pct = idx_pct,\
         mode = 'test',\
+        transforms = None,\
+        domains = modality,\
+        extern_norm_fn = partial(get_normalize_op,domain=False),
+        base_dir = BASEDIR,\
+        tile_z_dim = tile_z_dim)
+
+def get_test_all(modality, tile_z_dim = 3, idx_pct = [0.7, 0.1, 0.2]):
+     return AbdominalDataset(idx_pct = idx_pct,\
+        mode = 'test_all',\
         transforms = None,\
         domains = modality,\
         extern_norm_fn = partial(get_normalize_op,domain=False),

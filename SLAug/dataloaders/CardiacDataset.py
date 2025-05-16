@@ -1,9 +1,8 @@
-# CardicacDataset.py
 # Dataloader for abdominal images
 import glob
 import numpy as np
-import data.niftiio as nio
-import data.transform_utils as trans
+import dataloaders.niftiio as nio
+import dataloaders.transform_utils as trans
 import torch
 import os
 import platform
@@ -11,11 +10,11 @@ import torch.utils.data as torch_data
 from functools import partial
 from .location_scale_augmentation import LocationScaleAugmentation
 hostname = platform.node()
-BASEDIR = './data/processed/cardiac/processed'
-print(f'Adjusted BASEDIR to include processed subfolder: {BASEDIR}')
+# folder for datasets
+BASEDIR = './data/cardiac/processed'
 print(f'Running on machine {hostname}, using dataset from {BASEDIR}')
 LABEL_NAME = ["bg", "Myocardium",  "Lventricle","Rventricle"]
-from data.niftiio import read_nii_bysitk
+from dataloaders.niftiio import read_nii_bysitk
 
 class mean_std_norm(object):
     def __init__(self,mean=None,std=None):
@@ -76,16 +75,7 @@ class CardiacDataset(torch_data.Dataset):
 
         self.img_pids = {}
         for _domain in self.domains: # load file names
-            # collect image IDs by domain, using os.path.join for cross-platform safety
-            img_pattern = os.path.join(self._base_dir, _domain, 'image_*.nii.gz')
-            found = glob.glob(img_pattern)
-            if not found:
-                raise FileNotFoundError(f"No image files found for domain '{_domain}' in {os.path.dirname(img_pattern)}")
-            self.img_pids[_domain] = sorted(
-                [os.path.basename(fid).split("_")[-1].split(".nii.gz")[0] for fid in found],
-                key=lambda x: int(x)
-            )
-            print(f"Found {len(self.img_pids[_domain])} image files for domain {_domain} in {os.path.dirname(img_pattern)}")
+            self.img_pids[_domain] = sorted([ fid.split("_")[-1].split(".nii.gz")[0] for fid in glob.glob(self._base_dir + "/" +  _domain  + "/image_*.nii.gz") ], key = lambda x: int(x))
 
         self.scan_ids = self.__get_scanids() # train val test split in terms of patient ids
         self.info_by_scan = None

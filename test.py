@@ -1,12 +1,15 @@
-#test.py
+#test.py test
 import os
 import sys
 
+import distutils.version
 # 将当前工作目录添加到 Python 模块搜索路径中，确保可以导入当前目录下的模块
 sys.path.append(os.getcwd())
 
 import argparse  # 用于解析命令行参数
 from torch.utils.data import DataLoader  # PyTorch 中用于数据加载的 DataLoader 类
+from torch.utils.tensorboard import SummaryWriter
+import torchvision
 import numpy as np  # 数组和数值计算库
 import glob  # 用于文件路径匹配，查找符合特定模式的文件
 from main import instantiate_from_config  # 从 main 模块中导入根据配置实例化模型或其他对象的函数
@@ -145,3 +148,52 @@ if __name__ == "__main__":
     out_prediction_list, dsc_table, error_dict, domain_names = prediction_wrapper(
         model, test_loader, 0, label_name, save_prediction=True
     )
+
+
+
+
+def test_and_log(models_info,       # dict: { "model_name": (model_obj, ckpt_path), ... }
+                 test_dataset,
+                 device="cuda",
+                 base_logdir="runs/seg_vis"):
+
+    for model_name, (model, ckpt_path) in models_info.items():
+        # 1. 加载模型权重
+        model.to(device).eval()
+        model.load_state_dict(torch.load(ckpt_path, map_location=device))
+        
+        # 2. 为每个模型创建单独的 writer
+        logdir = f"{base_logdir}/{model_name}"
+        writer = SummaryWriter(log_dir=logdir)
+        
+        # 3. 随便选几张 test 样本来可视化
+        for step, (img, gt) in enumerate(test_dataset):
+            if step >= 5:          # 最多可视化前5个样本
+                break
+
+            img = img.to(device).unsqueeze(0)    # [1, C, H, W]
+            with torch.no_grad():
+                logits = model(img)               # [1, C, H, W]
+                pred = torch.argmax(torch.softmax(logits, dim=1), dim=1)  # [1, H, W]
+
+            # 把原图、GT、Pred 都转到 CPU、numpy 格式
+            img0  = img[0].cpu()                   # [C, H, W]
+            gt0   = gt.unsqueeze(0).cpu()          # [1, H, W]
+            pred0 = pred.unsqueeze(0).cpu()        # [1, H, W]
+
+            # 拼成一行三列的 grid（也可以自定义 nrow）
+            grid = torchvision.utils.make_grid(
+                [img0, 
+                 torch.cat([img0]*3)[0:1],  # 如果想overlay，可以先把原图多份放着
+                 torch.cat([img0]*3)[0:1]],
+                nrow=3,
+                normalize=True,
+                scale_each=True
+            )
+            # 写入原图 Grid
+            writer.add_image(f"{model_name}/image_grid", grid, global_step=step)
+            # 单独写入 GT 和 Pred
+            writer.add_image(f"{model_name}/GT_mask", gt0,  step)
+            writer.add_image(f"{model_name}/Pred_mask", pred0, step)
+
+        writer.close()

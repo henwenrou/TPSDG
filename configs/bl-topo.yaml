@@ -1,0 +1,51 @@
+model:
+  target: segmentation_models_pytorch.Unet
+  params:
+    encoder_name: efficientnet-b2
+    encoder_weights: null
+    in_channels: 1
+    classes: 4
+    activation: null
+
+optimizer:
+  target: torch.optim.Adam
+  learning_rate: 3e-4
+  weight_decay: 3e-5
+  max_epoch: 250
+  max_iter: -1
+  warmup_iter: -1
+  lr_scheduler: lambda
+
+saliency_balancing_fusion:
+  usage: true
+  grid_size: 18
+
+loss:
+  topo:
+    enabled: True      # 是否启用拓扑损失
+    weight: 0.3        # 拓扑损失的权重，按需求调整
+    
+data:
+  target: main-test.DataModuleFromConfig
+  params:
+    batch_size: 32
+    num_workers: 8
+    train:
+      target: data.CardiacDataset.get_training
+      params:
+        location_scale: true
+        modality:
+          - bSSFP
+        tile_z_dim: 1
+    validation:
+      target: data.CardiacDataset.get_validation
+      params:
+        modality:
+          - bSSFP
+        tile_z_dim: 1
+    test:
+      target: data.CardiacDataset.get_test
+      params:
+        modality:
+          - LGE
+        tile_z_dim: 1

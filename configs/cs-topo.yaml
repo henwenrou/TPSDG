@@ -11,7 +11,7 @@ optimizer:
   target: torch.optim.Adam
   learning_rate: 3e-4
   weight_decay: 3e-5
-  max_epoch: 2000
+  max_epoch: 2
   max_iter: -1
   warmup_iter: -1
   lr_scheduler: lambda
@@ -19,6 +19,13 @@ optimizer:
 saliency_balancing_fusion:
   usage: true
   grid_size: 3
+
+
+loss:
+  topo:
+    enabled: True      # 是否启用拓扑损失
+    weight: 0.3        # 拓扑损失的权重，按需求调整
+    
 
 data:
   target: main.DataModuleFromConfig

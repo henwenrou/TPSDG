@@ -1,6 +1,0 @@
-# override.yaml
-optimizer:
-  max_epoch: 10
-data:
-  params:
-    num_workers: 8

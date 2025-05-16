@@ -4,48 +4,48 @@ model:
     encoder_name: efficientnet-b2
     encoder_weights: null
     in_channels: 1
-    classes: 5
+    classes: 4
     activation: null
 
 optimizer:
   target: torch.optim.Adam
   learning_rate: 3e-4
   weight_decay: 3e-5
-  max_epoch: 10
+  max_epoch: 3
   max_iter: -1
   warmup_iter: -1
   lr_scheduler: lambda
 
 saliency_balancing_fusion:
   usage: true
-  grid_size: 3
-  
+  grid_size: 18
+
 loss:
   topo:
     enabled: False      # 是否启用拓扑损失
-    weight: 0.5        # 拓扑损失的权重，按需求调整
+    weight: 0.0        # 拓扑损失的权重，按需求调整
     
 data:
-  target: main.DataModuleFromConfig
+  target: main-demo.DataModuleFromConfig
   params:
     batch_size: 32
     num_workers: 8
     train:
-      target: data.AbdominalDataset.get_training
+      target: data.CardiacDataset.get_training
       params:
         location_scale: true
         modality:
-          - SABSCT
+          - LGE
         tile_z_dim: 1
     validation:
-      target: data.AbdominalDataset.get_validation
+      target: data.CardiacDataset.get_validation
       params:
         modality:
-          - SABSCT
+          - LGE
         tile_z_dim: 1
     test:
-      target: data.AbdominalDataset.get_test_all
+      target: data.CardiacDataset.get_test
       params:
         modality:
-          - CHAOST2
+          - bSSFP
         tile_z_dim: 1
