@@ -1,4 +1,4 @@
-# main.py
+∂ƒ# main.py
 # 导入所需的标准库模块
 import argparse      # 用于解析命令行参数
 import os            # 操作系统接口（如文件、目录操作）
@@ -21,6 +21,11 @@ import random      # 随机数生成
 from torch.optim import lr_scheduler  # 学习率调度器
 from torch.utils.tensorboard import SummaryWriter
 from monai.losses import DiceLoss
+
+import torch
+torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.deterministic = True
+torch.use_deterministic_algorithms(True)
 
 class Tee:
     def __init__(self, *files):
@@ -295,7 +300,7 @@ if __name__ == "__main__":
     print(len(data.datasets["train"]))
     # 构造训练集 DataLoader，设置 persistent_workers、drop_last 和 pin_memory 以加速数据加载
     train_loader = DataLoader(data.datasets["train"], batch_size=data.batch_size,
-                              num_workers=data.num_workers, shuffle=True, persistent_workers=True, drop_last=True, pin_memory=True)
+                              num_workers=data.num_workers, shuffle=True, persistent_workers=False, drop_last=True, pin_memory=True，generator=g)
 
     # 构造验证集 DataLoader，batch_size 与训练一致，num_workers 设为 1
     val_loader = DataLoader(data.datasets["validation"], batch_size=data.batch_size, num_workers=1)
