@@ -435,7 +435,7 @@ def prediction_wrapper(model, test_loader, epoch, label_name, mode='base', save_
     model.eval()
     with torch.no_grad():
         out_prediction_list = {}  # 用于存储每个扫描的预测结果
-        for idx, batch in tqdm(enumerate(test_loader), total=len(test_loader)):
+        for idx, batch in enumerate(test_loader):
             if batch['is_start']:
                 slice_idx = 0
                 scan_id_full = str(batch['scan_id'][0])

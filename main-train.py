@@ -333,7 +333,7 @@ if __name__ == "__main__":
             scheduler.step()
 
         # 每 25 个 epoch 进行验证，保存验证集上最佳模型
-        if (cur_epoch + 1) % 10 == 0:
+        if (cur_epoch + 1) % 1 == 0:
             cur_dice, val_dice, val_ter = evaluate(model, val_loader, torch.device('cuda'))
             if np.mean(cur_dice) > best_dice:
                 mean_cur_dice = np.nanmean(cur_dice)          # 忽略 NaN，确保 float

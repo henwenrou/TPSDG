@@ -332,7 +332,7 @@ if __name__ == "__main__":
         if scheduler is not None:
             scheduler.step()
 
-        # 每 25 个 epoch 进行验证，保存验证集上最佳模型
+        # 每 10 个 epoch 进行验证，保存验证集上最佳模型
         if (cur_epoch + 1) % 10 == 0:
             cur_dice, val_dice, val_ter = evaluate(model, val_loader, torch.device('cuda'))
             if np.mean(cur_dice) > best_dice:

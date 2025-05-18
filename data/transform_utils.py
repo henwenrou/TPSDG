@@ -84,9 +84,10 @@ def get_geometric_transformer(aug, order=3):
     # 如果有弹性变换，则添加弹性变换操作
     if 'elastic' in aug['aug']:
         tfx.append(myit.ElasticTransform(alpha, sigma))
-
+    # ★ 在所有几何变换前先做 Z-score 归一化
+    all_tfx = [ZScoreNorm()] + tfx
     # 使用 torchvision 的 Compose 将所有几何变换组合起来
-    input_transform = deftfx.Compose(tfx)
+    input_transform = deftfx.Compose(all_tfx)
     return input_transform
 
 def get_intensity_transformer(aug):
@@ -304,3 +305,12 @@ class transform_with_label(object):
         else:
             t_label = np.expand_dims(np.argmax(t_label_h, axis=-1), -1)
         return t_img, t_label
+
+class ZScoreNorm:
+    """对每个 3D/2D volume 做 z-score 归一化"""
+    def __call__(self, img: np.ndarray):
+        img = img.astype(np.float32)
+        mu, sigma = img.mean(), img.std()
+        if sigma < 1e-6:               # 防止除零
+            return np.zeros_like(img)
+        return (img - mu) / sigma

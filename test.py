@@ -13,6 +13,7 @@ import torchvision
 import numpy as np  # 数组和数值计算库
 import glob  # 用于文件路径匹配，查找符合特定模式的文件
 from main import instantiate_from_config  # 从 main 模块中导入根据配置实例化模型或其他对象的函数
+from main import Tee
 import torch  # PyTorch 库，用于深度学习相关操作
 from omegaconf import OmegaConf
 
@@ -60,7 +61,6 @@ def get_parser():
              "to specify a custom datasets on the command line.",
     )
     return parser
-
 
 if __name__ == "__main__":
     # 再次将当前工作目录添加到模块搜索路径中，确保可以导入本目录下的模块

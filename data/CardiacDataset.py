@@ -4,6 +4,7 @@ import glob
 import numpy as np
 import data.niftiio as nio
 import data.transform_utils as trans
+from data.transform_utils import ZScoreNorm
 import torch
 import os
 import platform
@@ -16,6 +17,30 @@ print(f'Adjusted BASEDIR to include processed subfolder: {BASEDIR}')
 print(f'Running on machine {hostname}, using dataset from {BASEDIR}')
 LABEL_NAME = ["bg", "Myocardium",  "Lventricle","Rventricle"]
 from data.niftiio import read_nii_bysitk
+
+LABEL_MAP = {0: 0,    # bg
+             500: 1,  # Myocardium
+             600: 2,  # L ventricle
+             420: 3}  # R ventricle
+
+def _remap_labels(mask):
+    """
+    Remap label values to [0,1,2,3].
+    If mask already uses 0..nclass-1 labels, return unchanged.
+    Otherwise map {500->1,600->2,420->3}.
+    """
+    import numpy as np
+    # ensure integer type
+    mask_int = mask.astype(np.int32)
+    nclass = len(LABEL_NAME)
+    # if all values already in 0..nclass-1, return directly
+    if np.all((mask_int >= 0) & (mask_int < nclass)):
+        return mask_int.astype(np.uint8)
+    # otherwise perform mapping from intensity codes to class indices
+    mask_out = np.zeros_like(mask_int, dtype=np.uint8)
+    for src, dst in LABEL_MAP.items():
+        mask_out[mask_int == src] = dst
+    return mask_out
 
 class mean_std_norm(object):
     def __init__(self,mean=None,std=None):
@@ -166,8 +191,10 @@ class CardiacDataset(torch_data.Dataset):
                     vol_info = {'vol_vmin': img.min(), 'vol_vmax': img.max(), 'vol_mean': img.mean(), 'vol_std': img.std()}
                 img = self.normalize_op(img)
 
-                lb = nio.read_nii_bysitk(itm["lbs_fid"])
-                lb = np.float32(lb)
+                # --- CARDIAC LABEL DEBUG ---
+                raw_lb = nio.read_nii_bysitk(itm["lbs_fid"])
+                remapped_lb = _remap_labels(raw_lb)
+                lb = np.float32(remapped_lb)
 
                 img     = np.transpose(img, (1,2,0))
                 lb      = np.transpose(lb, (1,2,0))
@@ -247,8 +274,12 @@ class CardiacDataset(torch_data.Dataset):
         else:
             img = curr_dict['img']
             lb = curr_dict['lb']
+            # —— CARDIAC DEBUG ——
+            # 打印当前 scan 和 z slice
+            scan_id = curr_dict['scan_id']
+            z_id = curr_dict['z_id']
+            img_n = ZScoreNorm()(img)
             aug_img = 1
-
         img = np.float32(img)
         lb = np.float32(lb)
 
