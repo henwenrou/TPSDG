@@ -355,4 +355,3 @@ def get_test(modality,  tile_z_dim = 3):
         extern_norm_fn = partial(get_normalize_op,domain=False),
         base_dir = BASEDIR,\
         tile_z_dim = tile_z_dim)
-

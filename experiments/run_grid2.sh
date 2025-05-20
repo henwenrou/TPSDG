@@ -7,10 +7,10 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 export OMP_NUM_THREADS=1
 
 # —— 超参数循环 ——
-for lam in 0.8 0.9 1.0 1.5 2.0 ; do
+for lam in 0.3 1.2 1.4 1.6 1.8 2.0 ; do
   echo "===== Starting experiment with lambda = $lam ====="
   python main-train.py \
-    -b configs/cs-topo-temp.yaml \
+    -b configs/sc-topo-temp.yaml \
     --seed=42 \
     loss.topo.weight=$lam
 done

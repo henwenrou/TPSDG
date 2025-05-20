@@ -11,7 +11,7 @@ optimizer:
   target: torch.optim.Adam
   learning_rate: 3e-4
   weight_decay: 3e-5
-  max_epoch: 3
+  max_epoch: 200
   max_iter: -1
   warmup_iter: -1
   lr_scheduler: lambda
@@ -26,7 +26,7 @@ loss:
     weight: 0.0        # 拓扑损失的权重，按需求调整
     
 data:
-  target: main-demo.DataModuleFromConfig
+  target: main.DataModuleFromConfig
   params:
     batch_size: 32
     num_workers: 8
