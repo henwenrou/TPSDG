@@ -17,6 +17,9 @@ checkpoints/
 # 参考内容不git记录
 ref/
 
+# 可视化不git记录
+vis_topo/
+
 # data部分内容也不要
 data/Backup
 data/processed
