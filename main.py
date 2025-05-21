@@ -6,7 +6,6 @@ import sys           # 系统相关操作，如修改模块搜索路径
 import datetime      # 日期时间处理
 import importlib     # 动态导入模块
 
-# 解决 Intel MKL 库重复加载时的冲突问题
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'true'
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
@@ -336,7 +335,7 @@ if __name__ == "__main__":
             scheduler.step()
 
         # 每 10 个 epoch 进行验证，保存验证集上最佳模型
-        if (cur_epoch + 1) % 10 == 0:
+        if (cur_epoch + 1) % 25 == 0:
             cur_dice, val_dice, val_ter = evaluate(model, val_loader, torch.device('cuda'))
             if np.mean(cur_dice) > best_dice:
                 mean_cur_dice = np.nanmean(cur_dice)          # 忽略 NaN，确保 float

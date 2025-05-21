@@ -114,6 +114,7 @@ if __name__ == "__main__":
     cli = OmegaConf.from_dotlist(unknown)
     # 合并基础配置和命令行参数，命令行参数具有更高优先级
     config = OmegaConf.merge(*configs, cli)
+    print(f"Current losstopo weight: {config.loss.topo.weight}")
     # 从合并后的配置中弹出 "model" 部分，如果不存在则创建一个空配置
     model_config = config.pop("model", OmegaConf.create())
     print(model_config)
