@@ -8,6 +8,9 @@ import importlib     # 动态导入模块
 
 # 解决 Intel MKL 库重复加载时的冲突问题
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'true'
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+os.environ.setdefault("PYTHONHASHSEED", "42")
 
 import torch.optim  # PyTorch 优化器相关模块
 from omegaconf import OmegaConf  # OmegaConf 用于加载和合并配置文件

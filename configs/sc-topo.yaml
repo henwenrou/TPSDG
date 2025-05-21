@@ -26,7 +26,7 @@ loss:
     weight: 0.3        # 拓扑损失的权重，按需求调整
     
 data:
-  target: main-train.DataModuleFromConfig
+  target: train.DataModuleFromConfig
   params:
     batch_size: 32
     num_workers: 8
