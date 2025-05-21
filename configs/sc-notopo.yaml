@@ -29,7 +29,7 @@ data:
   target: main.DataModuleFromConfig
   params:
     batch_size: 32
-    num_workers: 8
+    num_workers: 5
     train:
       target: data.AbdominalDataset.get_training
       params:
