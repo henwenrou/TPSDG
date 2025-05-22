@@ -188,16 +188,16 @@ if __name__ == "__main__":
     # 构造参数解析器
     parser = get_parser()
     # 解析已知的命令行参数，未识别的参数存储在 unknown 中
-    opt, unknown = parser.parse_known_args()
+    args, unknown = parser.parse_known_args()
     # 设置全局随机种子
-    seed = seed_everything(opt.seed)
+    seed = seed_everything(args.seed)
     # 如果指定了 resume 参数，则检查对应路径是否存在
-    if opt.resume:
-        if not os.path.exists(opt.resume):
-            raise ValueError("Cannot find {}".format(opt.resume))
-    # 处理基础配置文件，若 opt.base 非空则生成配置文件名称后缀
-    if opt.base:
-        cfg_fname = os.path.split(opt.base[0])[-1]
+    if args.resume:
+        if not os.path.exists(args.resume):
+            raise ValueError("Cannot find {}".format(args.resume))
+    # 处理基础配置文件，若 args.base 非空则生成配置文件名称后缀
+    if args.base:
+        cfg_fname = os.path.split(args.base[0])[-1]
         cfg_name = os.path.splitext(cfg_fname)[0]
         name = "_" + cfg_name
     else:
@@ -205,7 +205,7 @@ if __name__ == "__main__":
         raise ValueError('no config')
 
     # 构造实验名称，包含时间、种子、配置文件名称后缀以及命令行后缀
-    nowname = now + f'_seed{seed}' + name + opt.postfix
+    nowname = now + f'_seed{seed}' + name + args.postfix
     # 定义日志目录、checkpoint 目录、配置目录以及可视化目录
     logdir = os.path.join("logs", nowname)
     ckptdir = os.path.join(logdir, "checkpoints")
@@ -215,16 +215,16 @@ if __name__ == "__main__":
     log_file = os.path.join(ckptdir, 'evaluate.log')
     for d in [logdir, cfgdir, ckptdir, visdir]:
         os.makedirs(d, exist_ok=True)
-        
+
     # ─── 将所有 stdout 和 stderr 分流到控制台和 run.log ───
     log_run_file = os.path.join(logdir, 'run.log')
     run_log_f = open(log_run_file, 'w')
     tee = Tee(sys.stdout, run_log_f)
     sys.stdout = tee
     sys.stderr = tee
-    
+
     # 加载所有基础配置文件，并合并命令行中未识别的参数
-    configs = [OmegaConf.load(cfg) for cfg in opt.base]
+    configs = [OmegaConf.load(cfg) for cfg in args.base]
     cli = OmegaConf.from_dotlist(unknown)
     config = OmegaConf.merge(*configs, cli)
     # 将合并后的配置保存到配置目录中，文件名包含当前时间
@@ -235,7 +235,7 @@ if __name__ == "__main__":
     optimizer_config = config.pop('optimizer', OmegaConf.create())
     SBF_config = config.pop('saliency_balancing_fusion', OmegaConf.create())
     loss_config = config.pop('loss', OmegaConf.create())
-    
+
     # 根据模型配置实例化模型
     model = instantiate_from_config(model_config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -267,14 +267,14 @@ if __name__ == "__main__":
 
     print('optimization parameters: ', opt_params)
     # 根据优化器配置中的 target 字符串（例如 'torch.optim.SGD'）实例化优化器
-    opt = eval(optimizer_config['target'])(param_dicts, **opt_params)
+    optimizer = eval(optimizer_config['target'])(param_dicts, **opt_params)
 
     # 如果使用 lambda 学习率调度器，则定义 lambda 函数计算 lr 衰减因子
     if optimizer_config.lr_scheduler == 'lambda':
         def lambda_rule(epoch):
             lr_l = 1.0 - max(0, epoch + 1 + 0 - 50) / float(optimizer_config.max_epoch - 50 + 1)
             return lr_l
-        scheduler = lr_scheduler.LambdaLR(opt, lr_lambda=lambda_rule)
+        scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_rule)
     else:
         scheduler = None
         print('We follow the SSDG learning rate schedule by default, you can add your own schedule by yourself')
@@ -313,23 +313,50 @@ if __name__ == "__main__":
     # 如果配置中设置了 warmup_iter 且大于 0，则执行预热训练
     if getattr(optimizer_config, 'warmup_iter'):
         if optimizer_config.warmup_iter > 0:
-            train_warm_up(model, criterion, train_loader, opt, torch.device('cuda'), lr, optimizer_config.warmup_iter)
+            train_warm_up(model, criterion, train_loader, optimizer, torch.device('cuda'), lr, optimizer_config.warmup_iter)
     cur_iter = 0
     best_dice = 0
     # 获取训练集中的标签名称（用于后续评估指标计算）
     label_name = data.datasets["train"].all_label_names
 
+    # --- Resume from checkpoint if provided ---
+    start_epoch = 0
+    if args.resume:
+        checkpoint = torch.load(args.resume, map_location=device)
+        # load model weights (handle older checkpoints storing under different key)
+        model.load_state_dict(checkpoint.get('model_state_dict', checkpoint.get('model')))
+        # load optimizer and scheduler states
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if 'lr_scheduler_state_dict' in checkpoint and scheduler is not None:
+            scheduler.load_state_dict(checkpoint['lr_scheduler_state_dict'])
+        # restore training counters
+        start_epoch = checkpoint.get('epoch', 0) + 1
+        best_dice = checkpoint.get('best_dice', best_dice)
+        cur_iter = checkpoint.get('cur_iter', cur_iter)
+        print(f"Resumed training from checkpoint {args.resume}, starting at epoch {start_epoch}")
+
     # 后续tensorboard writer实例化
     writer = SummaryWriter(log_dir=logdir)
 
+    # Helper function to save full checkpoint
+    def save_full_checkpoint(epoch, best_dice, cur_iter, ckpt_path):
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'lr_scheduler_state_dict': scheduler.state_dict() if scheduler else None,
+            'best_dice': best_dice,
+            'cur_iter': cur_iter
+        }, ckpt_path)
+
     # 开始训练循环
-    for cur_epoch in range(max_epoch):
+    for cur_epoch in range(start_epoch, max_epoch):
         print(f"=== BEGIN EPOCH {cur_epoch} ===")
         # 根据 SBF 配置决定使用哪种单 epoch 训练方法
         if SBF_config.usage:
-            cur_iter = train_one_epoch_SBF(model, criterion, train_loader, opt, torch.device('cuda'), cur_epoch, cur_iter, optimizer_config.max_iter, SBF_config, visdir, loss_config)
+            cur_iter = train_one_epoch_SBF(model, criterion, train_loader, optimizer, torch.device('cuda'), cur_epoch, cur_iter, optimizer_config.max_iter, SBF_config, visdir, loss_config)
         else:
-            cur_iter = train_one_epoch(model, criterion, train_loader, opt, torch.device('cuda'), cur_epoch, cur_iter, optimizer_config.max_iter, loss_config)
+            cur_iter = train_one_epoch(model, criterion, train_loader, optimizer, torch.device('cuda'), cur_epoch, cur_iter, optimizer_config.max_iter, loss_config)
         # 更新学习率调度器
         if scheduler is not None:
             scheduler.step()
@@ -354,7 +381,7 @@ if __name__ == "__main__":
                     else:
                         logger.warning("cur_dice 无效，跳过本轮 best_dice 更新")
 
-    
+
                 # 输出当前 epoch 的各类别 DICE 指标及平均值
                 str_log = f'Epoch [{cur_epoch}]   '
                 for i, d in enumerate(cur_dice):
@@ -377,13 +404,13 @@ if __name__ == "__main__":
         if (cur_epoch + 1) % 50 == 0:
             epoch = cur_epoch + 1
             ckpt_path = os.path.join(ckptdir, f'ckpt_epoch_{epoch}.pth')
-            torch.save({'model': model.state_dict()}, ckpt_path)
-            print(f"Saved checkpoint: {ckpt_path}")
+            save_full_checkpoint(epoch, best_dice, cur_iter, ckpt_path)
+            print(f"Saved full checkpoint: {ckpt_path}")
 
         # 如果达到最大迭代次数，则保存最新模型并结束训练
         if cur_epoch + 1 >= max_epoch:
-            torch.save({'model': model.state_dict()}, os.path.join(ckptdir, 'latest.pth'))
-            print(f'End training with iteration {cur_iter}')
+            save_full_checkpoint(cur_epoch, best_dice, cur_iter, os.path.join(ckptdir, 'latest.pth'))
+            print(f'End training and saved latest full checkpoint at iteration {cur_iter}')
             break
 
     # ——— 打印 checkpoints 目录里的所有文件 ———
