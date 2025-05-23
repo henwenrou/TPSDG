@@ -2,6 +2,9 @@
 __pycache__/
 *.pyc
 
+# 环境不记录
+bin/
+
 # Jupyter
 .ipynb_checkpoints/
 
