@@ -124,10 +124,27 @@ if __name__ == "__main__":
     show_config = False
     # 根据 model 配置实例化模型
     model = instantiate_from_config(model_config)
-    # 加载 checkpoint 文件，映射到 CPU 上（后续再转到 GPU）
+    # ① Load the full checkpoint
     pl_sd = torch.load(ckpt, map_location="cpu")
-    # 加载 checkpoint 中的模型参数，允许部分不匹配（strict=False）
-    model.load_state_dict(pl_sd['model'], strict=False)
+    print(">>> checkpoint keys:", pl_sd.keys())
+    # ② Extract the actual weight dict from checkpoint
+    if "model_state_dict" in pl_sd:
+        state_dict = pl_sd["model_state_dict"]
+    elif "state_dict" in pl_sd:
+        state_dict = pl_sd["state_dict"]
+    elif "model" in pl_sd:
+        state_dict = pl_sd["model"]
+    else:
+        # Top-level dict is weights
+        state_dict = pl_sd
+    # ③ Remove any DataParallel/DDP `module.` prefix
+    new_state_dict = {}
+    for k, v in state_dict.items():
+        name = k[len("module."):] if k.startswith("module.") else k
+        new_state_dict[name] = v
+    # ④ Load weights with strict=False and surface missing/unexpected keys
+    missing, unexpected = model.load_state_dict(new_state_dict, strict=False)
+    print(f"Missing params: {len(missing)}; Unexpected: {len(unexpected)}")
     # 将模型转移到 GPU，并设置为评估模式
     model.cuda().eval()
 
