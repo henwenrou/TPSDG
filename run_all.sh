@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run_all.sh
 
-configs=(lb-topo lb-notopo bl-topo bl-notopo)
+configs=(sc-topo-temp sc-notopo-temp sc-topo sc-notopo)
 
 # 串行执行
 for cfg in "${configs[@]}"; do

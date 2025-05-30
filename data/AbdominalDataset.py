@@ -4,7 +4,6 @@ import glob  # 用于文件路径匹配，获取数据集内所有符合条件�
 import numpy as np  # 数组和数值计算库
 import data.niftiio as nio  # 自定义的 nifti 文件读取模块，用于读取 NIfTI 格式医学影像
 import data.transform_utils as trans  # 自定义的数据增强/变换工具包
-from data.transform_utils import ZScoreNorm
 import torch  # PyTorch 库，用于深度学习模型及 tensor 相关操作
 import os  # 文件和目录操作库
 import platform  # 获取操作系统和主机信息
@@ -394,7 +393,6 @@ class AbdominalDataset(torch_data.Dataset):
         else:
             # 非训练阶段直接使用原始图像和标签
             img = curr_dict['img']
-            img = ZScoreNorm()(img)
             lb = curr_dict['lb']
             aug_img = 1
 

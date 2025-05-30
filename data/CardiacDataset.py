@@ -4,7 +4,6 @@ import glob
 import numpy as np
 import data.niftiio as nio
 import data.transform_utils as trans
-from data.transform_utils import ZScoreNorm
 import torch
 import os
 import platform
@@ -278,7 +277,6 @@ class CardiacDataset(torch_data.Dataset):
             # 打印当前 scan 和 z slice
             scan_id = curr_dict['scan_id']
             z_id = curr_dict['z_id']
-            img_n = ZScoreNorm()(img)
             aug_img = 1
         img = np.float32(img)
         lb = np.float32(lb)

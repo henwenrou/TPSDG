@@ -11,6 +11,8 @@ bin/
 # Mac 系统文件
 .DS_Store
 
+pyvenv.cfg
+
 # 模型权重和日志
 *.pth
 logs/
