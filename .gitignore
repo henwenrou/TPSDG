@@ -27,7 +27,10 @@ vis_topo/
 
 # data部分内容也不要
 data/Backup
-data/processed
+data/processed/abdominal/CHAOST2/processed/*
+data/processed/abdominal/SABSCT/processed/*
+data/processed/cardiac/processed/LGE/*
+data/processed/cardiac/processed/bSSFP/*
 data/raw
 
 
