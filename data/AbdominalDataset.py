@@ -274,7 +274,7 @@ class AbdominalDataset(torch_data.Dataset):
                         'vol_vmin': img.min(),
                         'vol_vmax': img.max(),
                         'vol_mean': self.normalize_op.mean,
-                        'vol_std': self.normalize_op.mean  # NOTE: 此处存在 bug，应该为 self.normalize_op.std
+                        'vol_std': self.normalize_op.std
                     }
                 else:
                     # 否则直接计算图像的统计信息
