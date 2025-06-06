@@ -1,17 +1,15 @@
 # engine.py
-# 导入所需模块
-from typing import Iterable  # 用于类型提示，表示可迭代对象
-import os  # 操作系统接口，用于路径和文件操作
-import matplotlib.pyplot as plt  # 绘图库，用于可视化输出
-import numpy as np  # 数值计算库
-import torch  # PyTorch，用于深度学习模型和张量操作
-import utils.misc as utils  # 自定义的辅助工具模块（例如日志记录、进度条等）
-import functools  # 函数工具库，用于函数包装、部分函数应用等
-from tqdm import tqdm  # 进度条工具，用于显示迭代进度
-import torch.nn.functional as F  # PyTorch中常用的函数接口，例如one_hot等
-from monai.metrics import compute_meandice  # MONAI中计算平均Dice系数的函数
-from monai.losses import DiceLoss
-from torch.autograd import Variable  # 用于包装变量，使其支持自动求导
+from typing import Iterable
+import os
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import utils.misc as utils
+import functools
+from tqdm import tqdm
+import torch.nn.functional as F
+from monai.metrics import compute_meandice
+from torch.autograd import Variable
 from data.saliency_balancing_fusion import get_SBF_map  # 导入获取SBF（Saliency Balancing Fusion）图的函数
 from losses.ph_loss import PHLoss
 from metrics import dice as dice_metric, ter as ter_metric
@@ -25,35 +23,15 @@ EPS = 1e-6                    # 防 0
 def train_warm_up(model: torch.nn.Module, criterion: torch.nn.Module,
                   data_loader: Iterable, optimizer: torch.optim.Optimizer,
                   device: torch.device, learning_rate: float, warmup_iteration: int = 1500):
-    """
-    训练预热函数，用于在正式训练前对模型进行预热，以逐步增加学习率。
-
-    参数：
-        model: 训练的模型（torch.nn.Module）
-        criterion: 损失函数模块
-        data_loader: 训练数据的迭代器
-        optimizer: 优化器
-        device: 设备（如GPU）
-        learning_rate: 基础学习率
-        warmup_iteration: 预热总迭代次数，默认1500
-
-    过程：
-        1. 将模型和损失函数设置为训练模式。
-        2. 使用MetricLogger记录指标（如损失和当前学习率）。
-        3. 循环遍历数据，在每个iteration中更新学习率（按当前迭代数比例上升），计算损失并反向传播更新模型。
-        4. 当迭代次数达到预热设定值时退出。
-    """
     model.train()
     criterion.train()
 
-    # 使用自定义MetricLogger记录指标信息
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
 
-    print_freq = 10  # 设置打印频率，每10个iteration打印一次
+    print_freq = 10
     cur_iteration = 0
     while True:
-        # 遍历数据加载器，并使用tqdm显示进度
         for i, samples in enumerate(metric_logger.log_every(data_loader, print_freq,                                                         'WarmUp with max iteration: {}'.format(warmup_iteration))):
             visual_dict = None
             # 将样本中所有张量移动到指定设备
@@ -117,7 +95,6 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     """
     model.train()
     criterion.train()
-    
    # 如果启用了拓扑损失，则创建实例
     if loss_config and loss_config.topo.enabled:
         ph_criterion = PHLoss(threshold=None).to(device)
@@ -329,91 +306,93 @@ def train_one_epoch_SBF(model: torch.nn.Module, criterion: torch.nn.Module,
 @torch.no_grad()
 def _evaluate_perclass(model: torch.nn.Module, data_loader: Iterable, device: torch.device):
     """
-    按类别评价——返回每个前景类别的平均 Dice
+    原版一次性对全数据计算每个前景类别的 Dice（exclude background）。
     """
     model.eval()
-    per_batch_scores = []
+
+    # 用于收集所有 batch 的 one-hot 预测与 ground truth
+    all_pred_onehot = []
+    all_gt_onehot   = []
 
     for samples in data_loader:
-        # 1) 移动到 device
+        # 1) 将数据移到指定设备
         img = samples['images'].to(device)
         lbl = samples['labels'].to(device)
-        # 如果标签形状是 (B,1,H,W)，去掉通道维
+        # 如果标签形状是 (B,1,H,W)，去掉 channel 维
         if lbl.ndim == img.ndim:
             lbl = lbl.squeeze(1)
 
-        # 2) 前向
-        logits = model(img)             # (B, C, H, W) 或 (B,1,H,W)
-        B, C = logits.shape[0], logits.shape[1]
+        # 2) 模型前向，得到 logits
+        logits = model(img)  # 输出形状 (B, C, H, W) 或 (B,1,H, W)
 
-        # 3) 二分类扩通道
-        if C == 1:
-            logits = torch.cat([1 - logits, logits], dim=1)
-            C = 2
+        # 3) 如果是二分类，先扩张成两通道 (背景, 前景)
+        if logits.shape[1] == 1:
+            logits = torch.cat([1 - logits, logits], dim=1)  # 变成 (B,2,H,W)
 
-        # 4) 获取硬预测
-        preds = torch.argmax(logits, dim=1)   # (B, H, W)
+        # 4) 取最终硬预测 (B, H, W)
+        preds = torch.argmax(logits, dim=1)
 
-        # 5) One-hot 编码
-        p1 = F.one_hot(preds, C).permute(0,3,1,2).float()  # (B,C,H,W)
-        t1 = F.one_hot(lbl.long(), C).permute(0,3,1,2).float()
+        # 5) 转成 one-hot 格式 (B, C, H, W)
+        C = logits.shape[1]
+        pred_onehot = F.one_hot(preds, C).permute(0, 3, 1, 2).float()
+        gt_onehot   = F.one_hot(lbl.long(), C).permute(0, 3, 1, 2).float()
 
-        # 6) 展平空间维
-        p_flat = p1.reshape(B, C, -1)  # (B,C,N)
-        t_flat = t1.reshape(B, C, -1)
+        # 6) 收集到列表（先转 CPU）
+        all_pred_onehot.append(pred_onehot.cpu())
+        all_gt_onehot.append(gt_onehot.cpu())
 
-        # 7) 计算交并集
-        inter = (p_flat * t_flat).sum(-1)             # (B, C)
-        union = p_flat.sum(-1) + t_flat.sum(-1)       # (B, C)
+    # 7) 把所有 batch 拼起来，得到形状 (N_total, C, H, W)
+    all_pred_onehot = torch.cat(all_pred_onehot, dim=0)
+    all_gt_onehot   = torch.cat(all_gt_onehot,   dim=0)
 
-        # 8) Dice 公式
-        dice_scores = (2 * inter + EPS) / (union + EPS)  # (B, C)
-
-        # 9) 剔除背景类 0
-        if C > 1:
-            dice_scores = dice_scores[:, 1:]           # (B, C-1)
-
-        # 10) 对 batch 求均值，得到 (C-1,) 向量
-        per_batch_scores.append(dice_scores.mean(0).cpu().numpy())
-
-    # 合并所有 batch，再对每个类取平均
-    all_scores = np.stack(per_batch_scores, 0)          # (num_batches, C-1)
-    per_class_dice = np.nanmean(all_scores, axis=0)    # (C-1,)
+    # 8) 一次性调用 MONAI 的 compute_meandice，排除背景
+    per_class_dice = compute_meandice(
+        y_pred=all_pred_onehot,
+        y=all_gt_onehot,
+        include_background=False
+    ).cpu().numpy()  # 得到长度为 C-1 的数组
 
     return per_class_dice
 @torch.no_grad()
 def evaluate(model: torch.nn.Module, data_loader: Iterable, device: torch.device):
     """
-    包装函数 —— 同时返回:
-        dices_array (旧接口)、
-        mean_dice   (标量)、
-        mean_ter    (标量, λ 不参与)
+    返回三个值：
+      1. per_class_dice：一次性对全数据集计算（exclude background）的每个前景类别 Dice。
+      2. mean_dice      ：对每个 batch 的整体 Dice 再求平均。
+      3. mean_ter       ：对每个 batch 的 TER（拓扑错误率）再求平均。
     """
-    # 先拿到按类别 Dice（旧逻辑）
-    dices = _evaluate_perclass(model, data_loader, device)
-
-    # 重新跑一次，算 mean-Dice + TER
     model.eval()
-    dice_list, ter_list = [], []
+    # 1. 先一次性对所有 batch 计算 per-class Dice
+    per_class_dice = _evaluate_perclass(model, data_loader, device)
+
+    # 2. 再跑一轮，收集每个 batch 的整体 Dice 和 TER
+    dice_list = []
+    ter_list  = []
     for samples in data_loader:
+        # 把所有张量移到 device
         for k, v in samples.items():
             if isinstance(v, torch.Tensor):
                 samples[k] = v.to(device)
+
         img = samples['images']
         lbl = samples['labels']
-        if lbl.ndim == 3:           # (B,H,W) → (B,1,H,W)
+        # 如果 lbl 形状是 (B,H,W)，则插入 channel 维 -> (B,1,H,W)
+        if lbl.ndim == img.ndim - 1:
             lbl = lbl.unsqueeze(1)
+
         logits = model(img)
-        prob   = torch.sigmoid(logits) if logits.shape[1]==1 else torch.softmax(logits,1)
-        
+        # 生成概率图用于 TER 计算
+        prob = torch.sigmoid(logits) if logits.shape[1] == 1 else torch.softmax(logits, dim=1)
+
+        # dice_metric 函数通常是“batch 内所有类别一起算一次 Dice”
         dice_list.append(dice_metric(logits, lbl))
-        ter_list .append(ter_metric (prob, lbl))
+        ter_list .append(ter_metric (prob,  lbl))
 
     mean_dice = sum(dice_list) / len(dice_list)
     mean_ter  = sum(ter_list ) / len(ter_list)
 
-    print(f"[EVAL] mean-Dice={mean_dice:.4f}  mean-TER={mean_ter:.4f}")
-    return dices, mean_dice, mean_ter      # ← 关键：三个值
+    print(f"[EVAL] per-class Dice={per_class_dice}  mean-Dice={mean_dice:.4f}  mean-TER={mean_ter:.4f}")
+    return per_class_dice, mean_dice, mean_ter
 
 # ------------------------- 预测封装函数 -------------------------
 def prediction_wrapper(model, test_loader, epoch, label_name, mode='base', save_prediction=False):
@@ -503,9 +482,7 @@ def eval_list_wrapper(vol_list, nclass, label_name):
             tables_by_domain[domain] = {'scores': [], 'scan_ids': []}
         pred_ = comp['pred']
         gth_ = comp['gth']
-        dices = compute_meandice(y_pred=convert_to_one_hot2(pred_, nclass),
-                                 y=convert_to_one_hot2(gth_, nclass),
-                                 include_background=True).cpu().numpy()[0].tolist()
+        dices=compute_meandice(y_pred=convert_to_one_hot2(pred_,nclass),y=convert_to_one_hot2(gth_,nclass),include_background=True).cpu().numpy()[0].tolist()
         tables_by_domain[domain]['scores'].append(dices)
         tables_by_domain[domain]['scan_ids'].append(scan_id)
         dsc_table[idx, ...] = np.reshape(dices, (-1))
